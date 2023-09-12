@@ -190,13 +190,10 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
 
-def fsdp_main(rank, world_size, args):
+def fsdp_main(rank, world_size, model, args):
     setup(rank, world_size)
-    
-    # initialize and load model
-    args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     torch.cuda.set_device(rank)
-    emu_model = prepare_model('Emu-14B', args).to(torch.float16)
+
     
     # init FSDP
     from torch.distributed.fsdp import (
@@ -216,7 +213,7 @@ def fsdp_main(rank, world_size, args):
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
         limit_all_gathers=True,
     )
-    emu_model.wrap_fsdp(wrapper_kwargs, addition_device_id = torch.cuda.device_count()-1)
+    model.wrap_fsdp(wrapper_kwargs, addition_device_id = torch.cuda.device_count()-1)
     
     # my_auto_wrap_policy = functools.partial(
     #     size_based_auto_wrap_policy, min_num_params=1000000
@@ -229,9 +226,9 @@ def fsdp_main(rank, world_size, args):
     # print(emu_model)
    
     # time.sleep(2000)
-    print(f"[LOG] : Rank {rank} Load ALL Model Done")
-    total_params = sum(p.numel() for p in emu_model.parameters())
-    print(f"Rank {rank} 模型的总参数数量: {total_params}")
+    # print(f"[LOG] : Rank {rank} Load ALL Model Done")
+    # total_params = sum(p.numel() for p in emu_model.parameters())
+    # print(f"Rank {rank} 模型的总参数数量: {total_params}")
 
     instruct_example(emu_model)
     
@@ -245,9 +242,14 @@ if __name__ == '__main__':
     
     args = parse_args()
 
+    # initialize and load model
+    args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    
+    emu_model = prepare_model('Emu-14B', args).to(torch.float16)
+
     # WORLD_SIZE = torch.cuda.device_count()
     WORLD_SIZE = 3
     mp.spawn(fsdp_main,
-        args=(WORLD_SIZE, args),
+        args=(WORLD_SIZE, emu_model, args),
         nprocs=WORLD_SIZE,
         join=True)
