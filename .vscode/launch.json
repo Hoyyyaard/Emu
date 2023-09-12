@@ -1,0 +1,24 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "1",
+            "type": "python",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            // "program": "/mnt/cephfs/home/zhihongyan/anaconda3/envs/zsvlnhl/lib/python3.8/site-packages/torch/distributed/launch.py",
+            "program": "inference.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/mnt/cephfs/home/zhihongyan/anaconda3/envs/emu_1/bin/python",
+            "env": {"CUDA_VISIBLE_DEVICES":"2,3,4"},
+            "args":[
+                "--instruct"
+            ]
+
+        }
+    ]
+}
