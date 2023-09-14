@@ -66,8 +66,8 @@ def cleanup():
 class Attention(nn.Module):
     def __init__(self):
         super().__init__()
-        self.qkv = nn.Linear(1, 13, bias=False)
-        self.q_bias = nn.Parameter(torch.zeros(1,1,100))
+        self.qkv = nn.Linear(10, 10, bias=False)
+        # self.q_bias = nn.Parameter(torch.zeros(10,10))
 
 class Net(nn.Module):
     def __init__(self):
@@ -83,9 +83,13 @@ class Net(nn.Module):
 
     def forward(self, x):
 
+        # memory_before_conv1 = int(torch.cuda.memory_reserved(torch.cuda.current_device())/1024/1024)
         x = self.conv1(x)
+        # print(f"Memory use in conv1 = {int(torch.cuda.memory_reserved(torch.cuda.current_device())/1024/1024) - memory_before_conv1}")
         x = F.relu(x)
+        # memory_before_conv2 = int(torch.cuda.memory_reserved(torch.cuda.current_device())/1024/1024)
         x = self.conv2(x)
+        # print(f"Memory use in conv2 = {int(torch.cuda.memory_reserved(torch.cuda.current_device())/1024/1024) - memory_before_conv2}")
         x = F.relu(x)
         x = F.max_pool2d(x, 2)
         x = self.dropout1(x)
@@ -94,6 +98,9 @@ class Net(nn.Module):
         x = F.relu(x)
         x = self.dropout2(x)
         x = self.fc2(x)
+        # print(self.attn.q_bias.shape)
+        # print(x.shape)
+        # x = x @ self.attn.q_bias
         output = F.log_softmax(x, dim=1)
         return output
     
@@ -148,7 +155,7 @@ def test(model, rank, world_size, test_loader):
             test_loss, int(ddp_loss[1]), int(ddp_loss[2]),
             100. * ddp_loss[1] / ddp_loss[2]))
         
-def fsdp_main(rank, world_size, args):
+def fsdp_main(rank, world_size, model, args):
     setup(rank, world_size)
 
     transform=transforms.Compose([
@@ -184,7 +191,7 @@ def fsdp_main(rank, world_size, args):
     init_end_event = torch.cuda.Event(enable_timing=True)
 
     
-    model = Net()
+    
     
     def find_leaf_modules_with_parents(model, parent_name='', result_dict=None):
         if result_dict is None:
@@ -200,7 +207,7 @@ def fsdp_main(rank, world_size, args):
 
         return result_dict
     result_dict = find_leaf_modules_with_parents(model)
-    print(result_dict)
+    # print(result_dict)
     
     def apply_with_stopping_condition(module, apply_fn, apply_condition=None, stopping_condition=None, **other_args):
         # if stopping_condition(module):
@@ -241,13 +248,18 @@ def fsdp_main(rank, world_size, args):
         cpu_offload=CPUOffload(offload_params=True),
         device_id=torch.cuda.current_device(),
         auto_wrap_policy=my_auto_wrap_policy,
-        sync_module_states=True,  # broadcast loaded ckpt from rank 0 -> all ranks
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        mixed_precision=None,
-        forward_prefetch=True,
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        limit_all_gathers=True,
+        use_orig_params=False,
+        # ignored_parameters=[model.test1],
+        # sync_module_states=True,  # broadcast loaded ckpt from rank 0 -> all ranks
+        # sharding_strategy=ShardingStrategy.FULL_SHARD,
+        # mixed_precision=None,
+        # forward_prefetch=True,
+        # backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        # limit_all_gathers=True,
     )
+    
+    # model = model.to(torch.cuda.current_device())
+    
     with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
         pass
         
@@ -279,13 +291,15 @@ def fsdp_main(rank, world_size, args):
         
         #     print(name)
         #     # setattr(model, name, wrap(module))1
+        # model = wrap(model)
         # model.conv1 = wrap(model.conv1)
         # model.conv2 = wrap(model.conv2)
         # model.dropout1 = wrap(model.dropout1)
         # model.dropout2 = wrap(model.dropout2)
         # model.fc1 = wrap(model.fc1)
         # model.fc2 = wrap(model.fc2)
-        # model.attn.qkv = wrap(model.attn.qkv)
+        # model.attn = wrap(model.attn)
+        # model.test1 = wrap(model.test1)
         # model.conv1._fsdp_wrap=True
         # model.conv2._fsdp_wrap=True
         # model.dropout1._fsdp_wrap=True
@@ -305,28 +319,28 @@ def fsdp_main(rank, world_size, args):
         # )
     
     model = FSDP(model,
-                sharding_strategy=ShardingStrategy.FULL_SHARD,
+                # sharding_strategy=ShardingStrategy.FULL_SHARD,
                 auto_wrap_policy=my_auto_wrap_policy,
                 device_id=torch.cuda.current_device(),
                 use_orig_params=False,
                 )
-    print(model)
+    # print(model)
     # assert False
     # print(model.parameters)
     
-    model.test1.data.to(torch.cuda.current_device())
-    model.attn.q_bias.data.to(torch.cuda.current_device())
+    # model.test1.data.to(torch.cuda.current_device())
+    # model.attn.q_bias.data.to(torch.cuda.current_device())
         
     # model = FSDP(model,
-    #             auto_wrap_policy=my_auto_wrap_policy,
-    #             device_id=torch.cuda.current_device(),)
-    # model = FSDP(model, auto_wrap_policy=size_based_auto_wrap_policy)
-    # print(model)
+    #             **wrapper_kwargs)
+    print(model)
 
     # model.attn.q_bias.data = model.attn.q_bias.data.to(torch.cuda.current_device())
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Rank {rank} 模型的总参数数量: {total_params*4/1024**3:.3f} GB")
     
-    a = model.test1.expand(1,-1,-1)
-    b = model.attn.q_bias.expand(1,-1,-1)
+    # a = model.test1.expand(1,-1,-1)
+    # b = model.attn.q_bias.expand(1,-1,-1)
     # print(model.test1)
     # print(model.attn.q_bias)
     # print(a)
@@ -334,6 +348,9 @@ def fsdp_main(rank, world_size, args):
 
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
     init_start_event.record()
+
+    # print((torch.cuda.memory_allocated(torch.cuda.current_device())))
+    # assert False
     for epoch in range(1, args.epochs + 1):
         train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=sampler1)
         test(model, rank, world_size, test_loader)
@@ -378,9 +395,13 @@ if __name__ == '__main__':
 
     torch.manual_seed(args.seed)
 
+    model = Net()
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"模型的总参数数量: {total_params}")
+    
     # WORLD_SIZE = torch.cuda.device_count()
-    WORLD_SIZE=1
+    WORLD_SIZE=2
     mp.spawn(fsdp_main,
-        args=(WORLD_SIZE, args),
+        args=(WORLD_SIZE, model, args),
         nprocs=WORLD_SIZE,
         join=True)

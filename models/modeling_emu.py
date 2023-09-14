@@ -89,10 +89,10 @@ class Emu(nn.Module):
 
         self.image_placeholder = "[IMG]" + "<image>" * self.n_causal + "[/IMG]"
         
-        self.visual = self.visual.eval()
-        self.decoder = self.decoder.eval()
-        self.cformer = self.cformer.eval()
-        self.ln_visual =self.ln_visual.eval()
+        # self.visual = self.visual.eval()
+        # self.decoder = self.decoder.eval()
+        # self.cformer = self.cformer.eval()
+        # self.ln_visual =self.ln_visual.eval()
 
     def wrap_fsdp(self, wrapper_kwargs, addition_device_id):
         """
@@ -170,34 +170,56 @@ class Emu(nn.Module):
         
         self.visual = self.visual.to(torch.cuda.current_device())
         self.ln_visual = self.ln_visual.to(torch.cuda.current_device())
+        self.cformer = self.cformer.to(torch.cuda.current_device())
         
         my_auto_wrap_policy = functools.partial(
             size_based_auto_wrap_policy, min_num_params=1
         )
-        self.cformer = FSDP(self.cformer , 
-            auto_wrap_policy=my_auto_wrap_policy,
-            device_id=torch.cuda.current_device(),
-            cpu_offload=CPUOffload(offload_params=True),
-            sync_module_states=True)
-        
-        # self.decoder = nn.ModuleList(
-        #     wrap(wrap(block)) for block in self.decoder.modules()
-        # )
-        
-        # total_par = 0
-        # for par in self.decoder.parameters():
-        #     total_par += par.numel()
-        # print(total_par)
         
         for block in self.decoder.modules():
             block.requires_grad_(False)
+        
+        # self.decoder = self.decoder.to(torch.cuda.current_device())
+        # print("Load Model to cuda done")
+        
+        ignored_modules = []
+        # for i in range(40):
+        #     layer = getattr(self.decoder.lm.base_model.model.model.layers, f"{i}")
+        #     ignored_modules.append(layer.input_layernorm)
+        #     ignored_modules.append(layer.post_attention_layernorm)
+        
+
             
         self.decoder = FSDP(self.decoder , 
-            auto_wrap_policy=size_based_auto_wrap_policy,
+            auto_wrap_policy=my_auto_wrap_policy,
             device_id=torch.cuda.current_device(),
-            cpu_offload=CPUOffload(offload_params=True))
+            ignored_modules=ignored_modules,
+            cpu_offload=CPUOffload(offload_params=False),
+            use_orig_params=False)
+        
+        def apply_with_stopping_condition(module, apply_fn, apply_condition=None, stopping_condition=None, **other_args):
+            if stopping_condition(module):
+                return
+            if apply_condition(module):
+                apply_fn(module, **other_args)
+                
+            for name, child in module.named_children():
+                apply_with_stopping_condition(
+                    child,
+                    apply_fn,
+                    apply_condition=apply_condition,
+                    stopping_condition=stopping_condition,
+                    **other_args
+                )
+        apply_with_stopping_condition(
+            module=self.decoder,
+            apply_fn=lambda m: m.to(torch.cuda.current_device()),
+            apply_condition=lambda m: len(list(m.children())) == 0,
+            stopping_condition=lambda m: isinstance(m, FSDP),
+        )
 
-        # print(f'{torch.cuda.memory_reserved(torch.cuda.current_device())/1024/1024.:2f}')
+        print(f'Decoder params after fsdp {(sum(p.numel() for p in self.decoder.parameters()))*2/(1024**3):.3f} GB')
+        print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024/1024.:2f}')
             
             # self.lang_encoder.old_decoder_blocks = nn.ModuleList(
             #     wrap(wrap(block)) for block in self.lang_encoder.old_decoder_blocks

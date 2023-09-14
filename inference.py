@@ -26,6 +26,7 @@ from torch.distributed.fsdp.wrap import (
 )
 
 import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -142,7 +143,7 @@ def pretrain_example():
 
 def instruct_example(emu_model):
     # prepare image captioning and vqa examples
-    image = process_img(img_path='examples/iron_man.jpg', device=torch.cuda.current_device())
+    image = process_img(img_path='assets/Emu.png', device=torch.cuda.current_device())
     question = 'what is the man doing?'
 
     # prepare interleaved image-text input example
@@ -191,6 +192,7 @@ def cleanup():
     dist.destroy_process_group()
 
 def fsdp_main(rank, world_size, model, args):
+    
     setup(rank, world_size)
     torch.cuda.set_device(rank)
 
@@ -223,14 +225,13 @@ def fsdp_main(rank, world_size, model, args):
     #                 device_id=torch.cuda.current_device(),
     #                 cpu_offload=CPUOffload(offload_params=True),
     #                 sync_module_states=True)
-    # print(emu_model)
-   
+    print(model)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Rank {rank} 模型的总参数数量: {total_params}")
     # time.sleep(2000)
     # print(f"[LOG] : Rank {rank} Load ALL Model Done")
-    # total_params = sum(p.numel() for p in emu_model.parameters())
-    # print(f"Rank {rank} 模型的总参数数量: {total_params}")
-
-    instruct_example(emu_model)
+    torch.cuda.empty_cache()
+    instruct_example(model)
     
     # torch.distributed.barrier() 
     # if args.instruct:
@@ -247,8 +248,19 @@ if __name__ == '__main__':
     
     emu_model = prepare_model('Emu-14B', args).to(torch.float16)
 
+    total_params = sum(p.numel() for p in emu_model.parameters())
+    print(f"total params: {total_params*2/(1024**3):.3f} GB")
+     
+    print(f"Decoder params : {(sum(p.numel() for p in emu_model.decoder.parameters()))*2/(1024**3):.3f} GB")
+    print(f"Cformer params : {(sum(p.numel() for p in emu_model.cformer.parameters()))*2/(1024**3):.3f} GB")
+    print(f"visual params : {(sum(p.numel() for p in emu_model.visual.parameters()))*2/(1024**3):.3f} GB")
+
+    # for n,_ in emu_model.named_parameters():
+    #     if "input_layernorm" in n or "post_attention_layernorm" in n:
+    #         print(n)
+    
     # WORLD_SIZE = torch.cuda.device_count()
-    WORLD_SIZE = 3
+    WORLD_SIZE = 2
     mp.spawn(fsdp_main,
         args=(WORLD_SIZE, emu_model, args),
         nprocs=WORLD_SIZE,
