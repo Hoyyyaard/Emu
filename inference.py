@@ -76,7 +76,7 @@ def prepare_model(model_name, args):
     return model
 
 
-def Emu_inference(image_list, text_sequence, system='', instruct=True, max_new_tokens=128, beam_size=5, length_penalty=0.0):
+def Emu_inference(emu_model, image_list, text_sequence, system='', instruct=True, max_new_tokens=128, beam_size=5, length_penalty=0.0):
     if instruct:
         prompt = f"{system} [USER]: {text_sequence} [ASSISTANT]:".strip()
     else:
@@ -143,43 +143,43 @@ def pretrain_example():
 
 def instruct_example(emu_model):
     # prepare image captioning and vqa examples
-    image = process_img(img_path='assets/Emu.png', device=torch.cuda.current_device())
+    image = process_img(img_path='assets/iron_man.jpg', device=torch.cuda.current_device())
     question = 'what is the man doing?'
 
     # prepare interleaved image-text input example
-    # image_text_sequence = [
-    #     process_img(img_path='examples/book1.jpeg', device=args.device),
-    #     'This is the first image.',
-    #     process_img(img_path='examples/book2.jpeg', device=args.device),
-    #     'This is the second image.',
-    #     process_img(img_path='examples/book3.jpeg', device=args.device),
-    #     'This is the third image.',
-    #     process_img(img_path='examples/book4.jpeg', device=args.device),
-    #     'This is the fourth image.',
-    #     'Describe all images.'
-    # ]
-    # interleaved_sequence_1 = ''
-    # image_list_1 = []
-    # for item in image_text_sequence:
-    #     if isinstance(item, str):  # text
-    #         interleaved_sequence_1 += item
-    #     else:  # image
-    #         image_list_1.append(item)
-    #         interleaved_sequence_1 += image_placeholder
+    image_text_sequence = [
+        process_img(img_path='examples/book1.jpeg', device=torch.cuda.current_device()),
+        'This is the first image.',
+        process_img(img_path='examples/book2.jpeg', device=torch.cuda.current_device()),
+        'This is the second image.',
+        process_img(img_path='examples/book3.jpeg', device=torch.cuda.current_device()),
+        'This is the third image.',
+        process_img(img_path='examples/book4.jpeg', device=torch.cuda.current_device()),
+        'This is the fourth image.',
+        'Describe all images.'
+    ]
+    interleaved_sequence_1 = ''
+    image_list_1 = []
+    for item in image_text_sequence:
+        if isinstance(item, str):  # text
+            interleaved_sequence_1 += item
+        else:  # image
+            image_list_1.append(item)
+            interleaved_sequence_1 += image_placeholder
 
-    # # prepare video example
-    # image_list_2, interleaved_sequence_2 = process_video('examples/AppleVR.mp4')
-    # interleaved_sequence_2 += "What's the woman doing in the video?"
+    # prepare video example
+    image_list_2, interleaved_sequence_2 = process_video('examples/AppleVR.mp4')
+    interleaved_sequence_2 += "What's the woman doing in the video?"
 
     # # Instruct Model Inference
     # # -- image captioning
     Emu_instruct_caption(image, emu_model)
-    # # -- visual question answering
-    # Emu_inference([image], image_placeholder + question, system=image_system_msg)
-    # # -- image-text interleaved input, text output
-    # Emu_inference(image_list_1, interleaved_sequence_1, system='')
-    # # -- video understanding
-    # Emu_inference(image_list_2, interleaved_sequence_2, system=video_system_msg, length_penalty=1.0)
+    # -- visual question answering
+    Emu_inference(emu_model, [image], image_placeholder + question, system=image_system_msg)
+    # -- image-text interleaved input, text output
+    Emu_inference(emu_model, image_list_1, interleaved_sequence_1, system='')
+    # -- video understanding
+    Emu_inference(emu_model, image_list_2, interleaved_sequence_2, system=video_system_msg, length_penalty=1.0)
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -204,33 +204,29 @@ def fsdp_main(rank, world_size, model, args):
     ShardingStrategy,
     BackwardPrefetch,
     )
+    my_auto_wrap_policy = functools.partial(
+        size_based_auto_wrap_policy, min_num_params=100
+    )
     wrapper_kwargs = dict(
         process_group=None,
-        cpu_offload=CPUOffload(offload_params=True),
+        cpu_offload=CPUOffload(offload_params=False),
         device_id=torch.cuda.current_device(),
-        sync_module_states=True,  # broadcast loaded ckpt from rank 0 -> all ranks
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        mixed_precision=None,
-        forward_prefetch=True,
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        limit_all_gathers=True,
+        auto_wrap_policy=size_based_auto_wrap_policy,
+
     )
-    model.wrap_fsdp(wrapper_kwargs, addition_device_id = torch.cuda.device_count()-1)
+    model.wrap_fsdp(wrapper_kwargs)
     
-    # my_auto_wrap_policy = functools.partial(
-    #     size_based_auto_wrap_policy, min_num_params=1000000
-    # )
+
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
     #                 device_id=torch.cuda.current_device(),
     #                 cpu_offload=CPUOffload(offload_params=True),
     #                 sync_module_states=True)
-    print(model)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Rank {rank} 模型的总参数数量: {total_params}")
+    # print(model)
+    # total_params = sum(p.numel() for p in model.parameters())
+    # print(f"Rank {rank} 模型的总参数数量: {total_params}")
     # time.sleep(2000)
     # print(f"[LOG] : Rank {rank} Load ALL Model Done")
-    torch.cuda.empty_cache()
     instruct_example(model)
     
     # torch.distributed.barrier() 
@@ -259,8 +255,8 @@ if __name__ == '__main__':
     #     if "input_layernorm" in n or "post_attention_layernorm" in n:
     #         print(n)
     
-    # WORLD_SIZE = torch.cuda.device_count()
-    WORLD_SIZE = 2
+    WORLD_SIZE = torch.cuda.device_count()
+    # WORLD_SIZE = 8
     mp.spawn(fsdp_main,
         args=(WORLD_SIZE, emu_model, args),
         nprocs=WORLD_SIZE,

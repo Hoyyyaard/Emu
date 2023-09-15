@@ -110,3 +110,68 @@ If you find Emu useful for your research and applications, please consider starr
 [![Star History Chart](https://api.star-history.com/svg?repos=baaivision/Emu&type=Date)](https://star-history.com/#baaivision/Emu&Date)
 
 </div>
+
+
+
+## FSDP Implement
+- Model in **torch.float16**
+- Inference takes about 31G in V100 >>>  Inference takes about 8G in 3090(WORLD_SIZE=8)
+- Implement details
+```
+    Manually wraps submodules for FSDP and move other parameters to device_id.
+
+    Why manually wrap?
+    - all parameters within the FSDP wrapper must have the same requires_grad.
+        We have a mix of frozen and unfrozen parameters.
+    - model.vision_encoder.visual needs to be individually wrapped or encode_vision_x errors
+        See: https://github.com/pytorch/pytorch/issues/82461#issuecomment-1269136344
+
+    The rough wrapping structure is:
+    - EMU(total about 24.8G in torch.float16)
+        - visual (total about 1.8G in torch.float16)
+        - ln_visual 
+        - cformer
+        - decoder (total about 24G in torch.float16) (about3.043G after FSDP of world_size 8)
+            - lm
+                - base_model
+                    - model
+                        - layers
+                            - FSDP(nn.Module) * 40
+                                - buffer(Not in parameters)
+                                    - self_attn.rotary_emb.sin_cached
+                                    - self_attn.rotary_emb.sin_cached
+                        - FSDP(lm_head)
+                        - FSDP(stu_regress_head)
+
+
+    Known issues:
+    - Our FSDP strategy is not compatible with tied embeddings. If the LM embeddings are tied,
+        train with DDP or set the --freeze_lm_embeddings flag to true.
+    - With FSDP + gradient ckpting, one can increase the batch size with seemingly no upper bound.
+        Although the training curves look okay, we found that downstream performance dramatically
+        degrades if the batch size is unreasonably large (e.g., 100 MMC4 batch size for OPT-125M).
+
+    FAQs about our FSDP wrapping strategy:
+    Why double wrap?
+    As of torch==2.0.1, FSDP's _post_forward_hook and _post_backward_hook
+    only free gathered parameters if the module is NOT FSDP root.
+
+    Why unfreeze the decoder_layers?
+    See https://github.com/pytorch/pytorch/issues/95805
+    As of torch==2.0.1, FSDP's _post_backward_hook is only registed if the flat param
+    requires_grad=True. We need the postback to fire to avoid OOM.
+    To effectively freeze the decoder layers, we exclude them from the optimizer.
+
+    What is assumed to be frozen v. unfrozen?
+    We assume that the model is being trained under normal Flamingo settings
+    with these lines being called in factory.py:
+        ```
+        # Freeze all parameters
+        model.requires_grad_(False)
+        assert sum(p.numel() for p in model.parameters() if p.requires_grad) == 0
+
+        # Unfreeze perceiver, gated_cross_attn_layers, and LM input embeddings
+        model.perceiver.requires_grad_(True)
+        model.lang_encoder.gated_cross_attn_layers.requires_grad_(True)
+        [optional] model.lang_encoder.get_input_embeddings().requires_grad_(True)
+```
