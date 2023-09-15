@@ -4,7 +4,32 @@ import argparse
 
 from PIL import Image
 from models.pipeline import EmuGenerationPipeline
+import argparse
 
+import json
+import time
+import torch
+from models.modeling_emu import Emu
+from utils import process_img, process_video
+import functools
+
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    CPUOffload,
+    BackwardPrefetch,
+)
+from torch.distributed.fsdp.wrap import (
+    size_based_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+)
+
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -17,27 +42,42 @@ def parse_args():
     parser.add_argument(
         "--ckpt-path",
         type=str,
-        default='',
-        help="Emu Decoder ckpt path",
+        default='ckpts',
+        help="Emu ckpt path",
     )
     args = parser.parse_args()
 
     return args
 
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
 
-if __name__ == "__main__":
-    args = parse_args()
+    # initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
-    # NOTE
-    # Emu Decoder Pipeline only supports pretrain model
-    # Using instruct tuning model as image encoder may cause unpredicted results
-    assert args.instruct is False, "Image Generation currently do not support instruct tuning model"
+def cleanup():
+    dist.destroy_process_group()
+    
+def fsdp_main(rank, world_size, args):
+    
+    setup(rank, world_size)
+    torch.cuda.set_device(rank)
 
+    wrapper_kwargs = dict(
+        process_group=None,
+        cpu_offload=CPUOffload(offload_params=False),
+        device_id=torch.cuda.current_device(),
+        auto_wrap_policy=size_based_auto_wrap_policy,
+
+    )
     pipeline = EmuGenerationPipeline.from_pretrained(
         path=args.ckpt_path,
         args=args,
     )
-    pipeline = pipeline.bfloat16().cuda()
+    # pipeline = pipeline.bfloat16().cuda()
+    pipeline = pipeline.to(torch.float16)
+    pipeline.wrap_fsdp(wrapper_kwargs)
 
     # image blend case
     # image_1 = Image.open("examples/sunflower.png")
@@ -91,3 +131,30 @@ if __name__ == "__main__":
         image.save("incontext_result.jpg")
     else:
         print("In-context Generated Image Has Safety Concern!!!")
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # NOTE
+    # Emu Decoder Pipeline only supports pretrain model
+    # Using instruct tuning model as image encoder may cause unpredicted results
+    assert args.instruct is False, "Image Generation currently do not support instruct tuning model"
+
+    
+     
+    WORLD_SIZE = torch.cuda.device_count()
+    
+    # total_params = sum(p.numel() for p in pipeline.parameters())
+    # print(f"total params: {total_params*2/(1024**3):.3f} GB")
+     
+    # print(f"unet params : {(sum(p.numel() for p in pipeline.unet.parameters()))*2/(1024**3):.3f} GB")
+    # print(f"vae params : {(sum(p.numel() for p in pipeline.vae.parameters()))*2/(1024**3):.3f} GB")
+    # print(f"safety_checker params : {(sum(p.numel() for p in pipeline.safety_checker.parameters()))*2/(1024**3):.3f} GB")
+    # print(f"emu_encoder params : {(sum(p.numel() for p in pipeline.emu_encoder.parameters()))*2/(1024**3):.3f} GB")
+
+    # WORLD_SIZE = 8
+    mp.spawn(fsdp_main,
+        args=(WORLD_SIZE, args),
+        nprocs=WORLD_SIZE,
+        join=True)

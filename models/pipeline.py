@@ -14,7 +14,7 @@ from diffusers import AutoencoderKL, PNDMScheduler, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from transformers import CLIPImageProcessor
 
-from .modeling_emu import Emu
+from .modeling_emu_image_inference import Emu
 
 
 class EmuGenerationPipeline(nn.Module):
@@ -227,9 +227,11 @@ class EmuGenerationPipeline(nn.Module):
         model = Emu(**model_cfg, cast_dtype=torch.float, **kwargs)
         ckpt = torch.load(model_path, map_location="cpu")
         if "module" in ckpt:
-            model.load_state_dict(ckpt["module"], strict=True)
+            # model.load_state_dict(ckpt["module"], strict=True)
+            model.load_state_dict(ckpt["module"], strict=False)
         else:
-            model.load_state_dict(ckpt, strict=True)
+            # model.load_state_dict(ckpt, strict=True)
+            model.load_state_dict(ckpt, strict=False)
 
         return model
 
@@ -261,3 +263,9 @@ class EmuGenerationPipeline(nn.Module):
             **kwargs,
         )
 
+    def wrap_fsdp(self, wrapper_kwargs):
+        self.emu_encoder.wrap_fsdp(wrapper_kwargs)
+        self.vae = self.vae.to(torch.cuda.current_device())
+        self.unet = self.unet.to(torch.cuda.current_device())
+        self.safety_checker = self.safety_checker.to(torch.cuda.current_device())
+        print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')

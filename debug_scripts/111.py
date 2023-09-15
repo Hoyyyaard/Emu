@@ -258,7 +258,6 @@ def fsdp_main(rank, world_size, model, args):
         # limit_all_gathers=True,
     )
     
-    # model = model.to(torch.cuda.current_device())
     
     with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
         pass
