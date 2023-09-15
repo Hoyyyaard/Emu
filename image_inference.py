@@ -59,7 +59,7 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
     
-def fsdp_main(rank, world_size, args):
+def fsdp_main(rank, world_size, args, emu_encoder):
     
     setup(rank, world_size)
     torch.cuda.set_device(rank)
@@ -72,6 +72,7 @@ def fsdp_main(rank, world_size, args):
 
     )
     pipeline = EmuGenerationPipeline.from_pretrained(
+        emu_encoder=emu_encoder,
         path=args.ckpt_path,
         args=args,
     )
@@ -153,8 +154,10 @@ if __name__ == "__main__":
     # print(f"safety_checker params : {(sum(p.numel() for p in pipeline.safety_checker.parameters()))*2/(1024**3):.3f} GB")
     # print(f"emu_encoder params : {(sum(p.numel() for p in pipeline.emu_encoder.parameters()))*2/(1024**3):.3f} GB")
 
+    emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "ckpts/multimodal_encoder/pytorch_model.bin", args=args)
+    
     # WORLD_SIZE = 8
     mp.spawn(fsdp_main,
-        args=(WORLD_SIZE, args),
+        args=(WORLD_SIZE, args, emu_encoder),
         nprocs=WORLD_SIZE,
         join=True)

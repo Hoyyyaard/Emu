@@ -21,6 +21,7 @@ class EmuGenerationPipeline(nn.Module):
 
     def __init__(
         self,
+        emu_encoder,
         multimodal_model: str,
         feature_extractor: str,
         safety_checker: str,
@@ -51,7 +52,8 @@ class EmuGenerationPipeline(nn.Module):
             feature_extractor,
         )
 
-        self.emu_encoder = self.prepare_emu("Emu-14B", multimodal_model, **kwargs)
+        # self.emu_encoder = self.prepare_emu("Emu-14B", multimodal_model, **kwargs)
+        self.emu_encoder = emu_encoder
 
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.eval()
@@ -215,8 +217,9 @@ class EmuGenerationPipeline(nn.Module):
             has_nsfw_concept = None
         return image, has_nsfw_concept
 
+    @classmethod
     def prepare_emu(
-        self,
+        cls,
         model_name: str,
         model_path: str,
         **kwargs,
@@ -236,7 +239,7 @@ class EmuGenerationPipeline(nn.Module):
         return model
 
     @classmethod
-    def from_pretrained(cls, path: str, **kwargs):
+    def from_pretrained(cls, emu_encoder, path: str, **kwargs):
         multimodal_model = kwargs.pop("multimodal_model", None)
         feature_extractor = kwargs.pop("feature_extractor", None)
         safety_checker = kwargs.pop("safety_checker", None)
@@ -254,6 +257,7 @@ class EmuGenerationPipeline(nn.Module):
         vae = check_if_none(vae, f"{path}/vae")
 
         return cls(
+            emu_encoder=emu_encoder,
             multimodal_model=multimodal_model,
             feature_extractor=feature_extractor,
             safety_checker=safety_checker,
