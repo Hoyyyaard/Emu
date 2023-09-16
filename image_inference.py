@@ -83,45 +83,43 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     # image blend case
     # image_1 = Image.open("examples/sunflower.png")
     # image_2 = Image.open("examples/oil_sunflower.jpg")
-    image_1 = Image.open("examples/cat.jpg")
-    image_2 = Image.open("examples/tiger.jpg")
-    image, safety = pipeline(
-        [image_1, image_2],
-        height=512,
-        width=512,
-        guidance_scale=7.5,
-    )
+    
+    # image_1 = Image.open("examples/cat.jpg")
+    # image_2 = Image.open("examples/tiger.jpg")
+    # image, safety = pipeline(
+    #     [image_1, image_2],
+    #     height=512,
+    #     width=512,
+    #     guidance_scale=7.5,
+    # )
 
-    if safety is None or not safety:
-        image.save("image_blend_result.jpg")
-    else:
-        print("ImageBlend Generated Image Has Safety Concern!!!")
+    # if safety is None or not safety:
+    #     image.save("image_blend_result.jpg")
+    # else:
+    #     print("ImageBlend Generated Image Has Safety Concern!!!")
 
-    # text-to-image case
-    text = "An image of a dog wearing a pair of glasses."
-    image, safety = pipeline(
-        [text],
-        height=512,
-        width=512,
-        guidance_scale=7.5,
-    )
+    # # text-to-image case
+    # text = "An image of a dog wearing a pair of glasses."
+    # image, safety = pipeline(
+    #     [text],
+    #     height=512,
+    #     width=512,
+    #     guidance_scale=7.5,
+    # )
 
-    if safety is None or not safety:
-        image.save("text2image_result.jpg")
-    else:
-        print("T2I Generated Image Has Safety Concern!!!")
+    # if safety is None or not safety:
+    #     image.save("text2image_result.jpg")
+    # else:
+    #     print("T2I Generated Image Has Safety Concern!!!")
 
     # in-context generation
-    image_1 = Image.open("examples/dog.png")
-    image_2 = Image.open("examples/sunflower.png")
+    # image_1 = Image.open("examples/dog.png")
+    image_2 = Image.open("examples/arm.png").convert("RGB") 
 
     image, safety = pipeline(
         [
-            "This is the first image: ",
-            image_1,
-            "This is the second image: ",
             image_2,
-            "The animal in the first image surrounded with the plant in the second image: ",
+            "Image the image that the blue box is on top of the yellow box:",
         ],
         height=512,
         width=512,
@@ -129,7 +127,7 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     )
 
     if safety is None or not safety:
-        image.save("incontext_result.jpg")
+        image.save("results/arm.jpg")
     else:
         print("In-context Generated Image Has Safety Concern!!!")
 
