@@ -168,8 +168,9 @@ class Emu(nn.Module):
         # )
         
         torch.cuda.empty_cache()
-        print(f'Decoder params after fsdp {(sum(p.numel() for p in self.decoder.parameters()))*2/(1024**3):.3f} GB')
-        print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+        if (torch.cuda.current_device() == 0):
+            print(f'Decoder params after fsdp {(sum(p.numel() for p in self.decoder.parameters()))*2/(1024**3):.3f} GB')
+        # print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
         
         

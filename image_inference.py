@@ -114,23 +114,31 @@ def fsdp_main(rank, world_size, args, emu_encoder):
 
     # in-context generation
     # image_1 = Image.open("examples/dog.png")
+    init_start_event = torch.cuda.Event(enable_timing=True)
+    init_end_event = torch.cuda.Event(enable_timing=True)
+    init_start_event.record()
     image_2 = Image.open("examples/arm.png").convert("RGB") 
 
     image, safety = pipeline(
         [
             image_2,
-            "Image the image that the blue box is on top of the yellow box:",
+            "Make the blue box on top of the yellow box in the image:",
         ],
         height=512,
         width=512,
         guidance_scale=10.,
     )
+    init_end_event.record()
+
+    if rank == 0:
+        print(f"Model inference time : {init_start_event.elapsed_time(init_end_event) / 1000}sec")
 
     if safety is None or not safety:
         image.save("results/arm.jpg")
     else:
         print("In-context Generated Image Has Safety Concern!!!")
-
+    if rank == 0:
+        print(f'Finish torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
 
 if __name__ == "__main__":
     args = parse_args()

@@ -72,7 +72,7 @@ class Attention(nn.Module):
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.test1 = nn.Parameter(torch.zeros(1, 1, 100))
+        self.test1 = nn.Parameter(torch.zeros(10, 10))
         self.conv1 = nn.Conv2d(1, 32, 3, 1)
         self.conv2 = nn.Conv2d(32, 64, 3, 1)
         self.dropout1 = nn.Dropout(0.25)
@@ -98,6 +98,7 @@ class Net(nn.Module):
         x = F.relu(x)
         x = self.dropout2(x)
         x = self.fc2(x)
+        x = x @ self.test1
         # print(self.attn.q_bias.shape)
         # print(x.shape)
         # x = x @ self.attn.q_bias
@@ -338,7 +339,8 @@ def fsdp_main(rank, world_size, model, args):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Rank {rank} 模型的总参数数量: {total_params*4/1024**3:.3f} GB")
     
-    # a = model.test1.expand(1,-1,-1)
+    # a = model.test1.expand(1,-1)
+    
     # b = model.attn.q_bias.expand(1,-1,-1)
     # print(model.test1)
     # print(model.attn.q_bias)

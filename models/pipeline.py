@@ -272,4 +272,5 @@ class EmuGenerationPipeline(nn.Module):
         self.vae = self.vae.to(torch.cuda.current_device())
         self.unet = self.unet.to(torch.cuda.current_device())
         self.safety_checker = self.safety_checker.to(torch.cuda.current_device())
-        print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+        if torch.cuda.current_device() == 0:
+            print(f'FSDP model takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
