@@ -101,9 +101,11 @@ class LlamaForReg(transformers.LlamaForCausalLM):
         )
 
         hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states)  # scores for each vocabulary token before SoftMax
 
-        loss = None
+        loss = None   # Language modeling loss (for next-token prediction).
+        
+        #  Tokens with indices set to -100 are ignored (masked), the loss is only computed for the tokens with labels in [0, ..., config.vocab_size].
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
@@ -111,6 +113,14 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             # Flatten the tokens
             loss_fct = torch.nn.CrossEntropyLoss()
             loss = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1))
+            
+            # calculate the regressive loss for image tokens
+            # loss_freg = torch.nn.MSELoss(size_average = False)
+            loss_freg = torch.nn.MSELoss()
+            image_logits = hidden_states[regress_mask]
+            # image_logits = image_logits[:-1,:]  
+            image_logits_aft_reg_head = self.stu_regress_head(image_logits)
+            loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels)
 
         return RegressCausalLMOutputWithPast(
             llm_loss=loss,
@@ -200,6 +210,8 @@ class LLaMAForClsAndRegression(nn.Module):
         """
         B, n_causal, _ = image_embeds.shape
 
+        #  Tokens with indices set to -100 are ignored (masked), the loss is only computed for the tokens with labels in [0, ..., config.vocab_size].
+        
         # mask [PAD]
         targets = text_input.masked_fill(
             text_input == self.tokenizer.pad_token_id, -100
@@ -239,11 +251,11 @@ class LLaMAForClsAndRegression(nn.Module):
             inputs_embeds=text_embeds,
             attention_mask=text_mask,
             return_dict=True,
-            labels=targets,
-            regress_mask=regress_mask,
+            labels=targets,                             # only text embedding is not -100(ignore)
+            regress_mask=regress_mask,                  # true as image embedding
             img_length=n_causal,
             args=self.args,
-            regress_labels=regress_labels.detach()
+            regress_labels=regress_labels.detach()      # image embedding to regressive
             # regress_labels=text_embeds
         )
 

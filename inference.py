@@ -4,6 +4,7 @@ import json
 import time
 import torch
 from models.modeling_emu import Emu
+from models.modeling_emu_pretrain import Emu as Emu_pretrain
 from utils import process_img, process_video
 import functools
 image_placeholder = "[IMG]" + "<image>" * 32 + "[/IMG]"
@@ -39,7 +40,7 @@ def parse_args():
     parser.add_argument(
         "--ckpt-path",
         type=str,
-        default='ckpts/Emu-instruct.pt',
+        default='ckpts/multimodal_encoder/pytorch_model.bin',
         help="Emu ckpt path",
     )
     args = parser.parse_args()
@@ -52,7 +53,8 @@ def prepare_model(model_name, args):
         model_cfg = json.load(f)
     print(f"=====> model_cfg: {model_cfg}")
 
-    model = Emu(**model_cfg, args=args)
+    
+    model = Emu(**model_cfg, args=args) if args.instruct else Emu_pretrain(**model_cfg, args=args)
 
     if args.instruct:
         print('Patching LoRA...')
@@ -106,7 +108,6 @@ def Emu_instruct_caption(img, emu_model):
 
     samples = {"image": img, "prompt": prompt}
 
-    print('[LOG] Start General Response')
     output_text = emu_model.generate(
         samples,
         max_new_tokens=512,
@@ -117,15 +118,30 @@ def Emu_instruct_caption(img, emu_model):
 
     print(f"===> caption output: {output_text}\n")
 
+def finetune_example(emu_model):
+    image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
+    text = 'There are two dogs.[IMG]'
+    for _ in range(32):
+        text += "<image>"
+    text += "[/IMG]"
+    input_tokens = emu_model.decoder.tokenizer(
+            text, 
+            # padding="longest", 
+            return_tensors="pt",
+            # add_special_tokens=True,
+        ).to(torch.cuda.current_device())
+    # text_mask = torch.zeros_like(input_tokens.input_ids[0]).bool().to(input_tokens.device)
+    loss = emu_model(image,input_tokens.input_ids[0].unsqueeze(0),input_tokens.attention_mask[0].unsqueeze(0))
+    pass
 
-def pretrain_example():
+def pretrain_example(emu_model):
     # prepare in-context learning example
     image_text_sequence = [
-        process_img(img_path='examples/dog.png', device=args.device),
+        process_img(img_path='examples/dog.png', device=torch.cuda.current_device()),
         'There are two dogs.',
-        process_img(img_path='examples/panda.png', device=args.device),
+        process_img(img_path='examples/panda.png', device=torch.cuda.current_device()),
         'There are three pandas.',
-        process_img(img_path='examples/sunflower.png', device=args.device),
+        process_img(img_path='examples/sunflower.png', device=torch.cuda.current_device()),
     ]
     interleaved_sequence_1 = ''
     image_list_1 = []
@@ -138,7 +154,7 @@ def pretrain_example():
 
     # Pretrained Model Inference
     # -- in-context learning
-    Emu_inference(image_list_1, interleaved_sequence_1, instruct=False)
+    Emu_inference(emu_model, image_list_1, interleaved_sequence_1, instruct=False)
 
 
 def instruct_example(emu_model):
@@ -227,13 +243,16 @@ def fsdp_main(rank, world_size, model, args):
     # print(f"Rank {rank} 模型的总参数数量: {total_params}")
     # time.sleep(2000)
     # print(f"[LOG] : Rank {rank} Load ALL Model Done")
-    instruct_example(model)
+    # instruct_example(model)
     
     # torch.distributed.barrier() 
+    
     # if args.instruct:
-    #     instruct_example()
+    #     instruct_example(model)
     # else:
-    #     pretrain_example()
+    #     pretrain_example(model)
+    
+    finetune_example(emu_model=model)
 
 if __name__ == '__main__':
     

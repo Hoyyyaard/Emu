@@ -303,6 +303,7 @@ class Emu(nn.Module):
         text = [t.replace(placeholder, self.image_placeholder) for t in text]
 
         target_image_embeds = None
+        # regressive generate 32 image token for diffusion model
         for num_img_token in range(self.n_causal):
             if num_img_token == 0:
                 text = [f"{t}[IMG]" for t in text]
@@ -316,6 +317,7 @@ class Emu(nn.Module):
             text_embeds = self.decoder.lm.model.embed_tokens(input_ids)
 
             image_idx = (input_ids == IMAGE)
+            # torch.flip 对第1维进行反转   torch.cunsum 对第一维进行对前元素加和
             cumsum_idx = torch.flip(torch.cumsum(torch.flip(image_idx, dims=[1]), dim=1), dims=[1])
             if image is not None:
                 prompt_idx = torch.logical_and(image_idx, cumsum_idx > num_img_token)

@@ -14,7 +14,7 @@ from diffusers import AutoencoderKL, PNDMScheduler, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from transformers import CLIPImageProcessor
 
-from .modeling_emu_image_inference import Emu
+from .modeling_emu_pretrain import Emu
 
 
 class EmuGenerationPipeline(nn.Module):

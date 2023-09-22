@@ -10,13 +10,13 @@
             "request": "launch",
             "cwd": "${workspaceFolder}",
             // "program": "/mnt/cephfs/home/zhihongyan/anaconda3/envs/zsvlnhl/lib/python3.8/site-packages/torch/distributed/launch.py",
-            "program": "image_inference.py",
+            "program": "inference.py",
             "console": "integratedTerminal",
             "justMyCode": false,
             "python": "/mnt/gluster/home/zhihongyan/anaconda3/envs/emu/bin/python",
-            "env": {"CUDA_VISIBLE_DEVICES":"0,1,2,3"},
+            "env": {"CUDA_VISIBLE_DEVICES":"0,2,3,4,5,6"},
             "args":[
-                // "--instruct"
+
             ]
 
         }
