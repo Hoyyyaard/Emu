@@ -112,7 +112,7 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = torch.nn.CrossEntropyLoss()
-            loss = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1))
+            loss_cls = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1))
             
             # calculate the regressive loss for image tokens
             # loss_freg = torch.nn.MSELoss(size_average = False)
@@ -122,6 +122,8 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             image_logits_aft_reg_head = self.stu_regress_head(image_logits)
             loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels)
 
+        loss = loss_cls + loss_reg
+        
         return RegressCausalLMOutputWithPast(
             llm_loss=loss,
             logits=logits,

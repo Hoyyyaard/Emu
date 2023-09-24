@@ -10,7 +10,7 @@ import functools
 image_placeholder = "[IMG]" + "<image>" * 32 + "[/IMG]"
 image_system_msg = "You will be presented with an image: [IMG]ImageContent[/IMG]. You will be able to see the image after I provide it to you. Please answer my questions based on the given image."
 video_system_msg = "You are a helpful assistant and you will be presented with a video consisting of multiple chronological images: [IMG]ImageContent[/IMG]. You will be able to see the video after I provide it to you. Please answer my questions based on the given video."
-
+import tqdm
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -25,6 +25,9 @@ from torch.distributed.fsdp.wrap import (
     enable_wrap,
     wrap,
 )
+
+import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
@@ -43,6 +46,13 @@ def parse_args():
         default='ckpts/multimodal_encoder/pytorch_model.bin',
         help="Emu ckpt path",
     )
+    
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=10,
+    )
+    
     args = parser.parse_args()
 
     return args
@@ -118,21 +128,86 @@ def Emu_instruct_caption(img, emu_model):
 
     print(f"===> caption output: {output_text}\n")
 
-def finetune_example(emu_model):
-    image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
-    text = 'There are two dogs.[IMG]'
-    for _ in range(32):
-        text += "<image>"
-    text += "[/IMG]"
-    input_tokens = emu_model.decoder.tokenizer(
-            text, 
-            # padding="longest", 
-            return_tensors="pt",
-            # add_special_tokens=True,
-        ).to(torch.cuda.current_device())
-    # text_mask = torch.zeros_like(input_tokens.input_ids[0]).bool().to(input_tokens.device)
-    loss = emu_model(image,input_tokens.input_ids[0].unsqueeze(0),input_tokens.attention_mask[0].unsqueeze(0))
-    pass
+def finetune_example(emu_model, args):
+    emu_model.train()
+    
+    rank = torch.cuda.current_device()
+    
+    from src.pretrain_dataset import Pretrain_Dataset
+    dataset = Pretrain_Dataset()
+    train_sampler = DistributedSampler(dataset, 
+                                rank=rank, 
+                                num_replicas=torch.cuda.device_count(), 
+                                shuffle=True)
+    train_loader = torch.utils.data.DataLoader(dataset,
+                                            batch_size = 1 ,
+                                            num_workers = 1)
+    
+    # 将模型的参数分成几个组 每个组不同的学习率
+    param_groups = [
+        {'params': emu_model.visual.parameters(), 'lr': 4e-5},
+        {'params': emu_model.decoder.parameters(), 'lr': 3e-5},
+        {'params': emu_model.cformer.parameters(), 'lr': 1e-4}
+    ]
+    
+    optimizer = optim.AdamW(param_groups, lr = 1e-4)
+    
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
+    
+    for epoch in range(1, args.epochs + 1):
+        
+        train_sampler.set_epoch(epoch)
+        
+        ddp_loss = torch.zeros(2).to(rank)
+        
+        for batch in tqdm.tqdm(train_loader):
+            
+            prompt = batch[0][0]
+            # print(batch)
+            images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.float16) for fp in batch[1]], dim=0)
+            
+            input_tokens = emu_model.decoder.tokenizer(
+                                            prompt, 
+                                            padding="longest", 
+                                            return_tensors="pt",
+                                            add_special_tokens=True,
+                                            ).to(torch.cuda.current_device())
+            
+            loss = emu_model(images,
+                            input_tokens.input_ids[0].unsqueeze(0),
+                            input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
+            
+            loss.backward()
+            optimizer.step()
+            
+            ddp_loss[0] += loss.item()
+            ddp_loss[1] += len(prompt)
+            
+            torch.cuda.empty_cache()
+            if torch.cuda.current_device() == 0:
+                print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+        
+        dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)   
+        if rank == 0:
+            print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, ddp_loss[0] / ddp_loss[1]))
+
+        # 在每个周期结束后，更新学习率
+        scheduler.step()
+        
+    # image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
+    # text = 'There are two dogs.[IMG]'
+    # for _ in range(32):
+    #     text += "<image>"
+    # text += "[/IMG]"
+    # input_tokens = emu_model.decoder.tokenizer(
+    #         text, 
+    #         # padding="longest", 
+    #         return_tensors="pt",
+    #         # add_special_tokens=True,
+    #     ).to(torch.cuda.current_device())
+    # # text_mask = torch.zeros_like(input_tokens.input_ids[0]).bool().to(input_tokens.device)
+    # loss = emu_model(image,input_tokens.input_ids[0].unsqueeze(0),input_tokens.attention_mask[0].unsqueeze(0))
+    # pass
 
 def pretrain_example(emu_model):
     # prepare in-context learning example
@@ -252,7 +327,7 @@ def fsdp_main(rank, world_size, model, args):
     # else:
     #     pretrain_example(model)
     
-    finetune_example(emu_model=model)
+    finetune_example(emu_model=model, args=args)
 
 if __name__ == '__main__':
     
