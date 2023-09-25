@@ -141,19 +141,19 @@ class Emu(nn.Module):
                 for li,layer in enumerate(m):
                     wrapper_kwargs['auto_wrap_policy'] = my_auto_wrap_policy
                     with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-                        tmp_module_list.append(wrap(layer))
-                        
+                        tmp_module_list.append(wrap(layer))    
                 tmp_module_list = nn.ModuleList(tmp_module_list)
                 setattr(self.decoder.lm.base_model.model.model, n, tmp_module_list)
             else:
                 wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
                 with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
                     setattr(self.decoder.lm.base_model.model.model, n, wrap(m))
+         
             
-            wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
-            with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-                self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
-                self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
+        wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
+        with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+            self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
+            self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
 
         
         self.visual = self.visual.to(torch.cuda.current_device())
