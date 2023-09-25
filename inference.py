@@ -53,6 +53,18 @@ def parse_args():
         default=10,
     )
     
+    parser.add_argument(
+        "--lora_finetune",
+        action='store_true',
+        default=False,
+    )
+    
+    parser.add_argument(
+        "--train",
+        action='store_true',
+        default=False,
+    )
+    
     args = parser.parse_args()
 
     return args
@@ -64,9 +76,9 @@ def prepare_model(model_name, args):
     print(f"=====> model_cfg: {model_cfg}")
 
     
-    model = Emu(**model_cfg, args=args) if args.instruct else Emu_pretrain(**model_cfg, args=args)
+    model = Emu(**model_cfg, args=args) if args.instruct or args.lora_finetune else Emu_pretrain(**model_cfg, args=args)
 
-    if args.instruct:
+    if args.instruct :
         print('Patching LoRA...')
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
@@ -79,11 +91,28 @@ def prepare_model(model_name, args):
         )
         model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
 
+
     print(f"=====> loading from ckpt_path {args.ckpt_path}")
+    
     ckpt = torch.load(args.ckpt_path, map_location="cpu")
     msg = model.load_state_dict(ckpt, strict=False)
-    model.eval()
+    # model.eval()
     print(f"=====> get model.load_state_dict msg: {msg}")
+    
+    if args.lora_finetune:
+        print('Patching LoRA...')
+        from peft import LoraConfig, get_peft_model
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=16,
+            target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj'],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
+        model.decoder.lm.print_trainable_parameters()
+    
 
     return model
 
@@ -129,8 +158,7 @@ def Emu_instruct_caption(img, emu_model):
     print(f"===> caption output: {output_text}\n")
 
 def finetune_example(emu_model, args):
-    emu_model.train()
-    
+
     rank = torch.cuda.current_device()
     
     from src.pretrain_dataset import Pretrain_Dataset
@@ -288,25 +316,10 @@ def fsdp_main(rank, world_size, model, args):
     torch.cuda.set_device(rank)
 
     
-    # init FSDP
-    from torch.distributed.fsdp import (
-    CPUOffload,
-    MixedPrecision,
-    ShardingStrategy,
-    BackwardPrefetch,
-    )
-    my_auto_wrap_policy = functools.partial(
-        size_based_auto_wrap_policy, min_num_params=100
-    )
-    wrapper_kwargs = dict(
-        process_group=None,
-        cpu_offload=CPUOffload(offload_params=False),
-        device_id=torch.cuda.current_device(),
-        auto_wrap_policy=size_based_auto_wrap_policy,
 
-    )
-    model.wrap_fsdp(wrapper_kwargs)
+    model.wrap_fsdp()
     
+
 
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
@@ -344,6 +357,14 @@ if __name__ == '__main__':
     print(f"Decoder params : {(sum(p.numel() for p in emu_model.decoder.parameters()))*2/(1024**3):.3f} GB")
     print(f"Cformer params : {(sum(p.numel() for p in emu_model.cformer.parameters()))*2/(1024**3):.3f} GB")
     print(f"visual params : {(sum(p.numel() for p in emu_model.visual.parameters()))*2/(1024**3):.3f} GB")
+    
+    if args.train:
+        emu_model.train()
+    
+    # if args.lora_finetune:
+    #     args.ckpt_path = 'ckpts/Emu-instruct.pt'
+    
+
 
     # for n,_ in emu_model.named_parameters():
     #     if "input_layernorm" in n or "post_attention_layernorm" in n:

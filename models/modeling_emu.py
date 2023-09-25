@@ -99,31 +99,147 @@ class Emu(nn.Module):
         self.image_placeholder = "[IMG]" + "<image>" * self.n_causal + "[/IMG]"
         
 
-    def wrap_fsdp(self, wrapper_kwargs):
-
-        for block in self.decoder.modules():
-            block.requires_grad_(False)
-        with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-            for n, m in self.decoder.lm.base_model.model.model.named_children():
-                if isinstance(m, nn.ModuleList):
-                    tmp_module_list = nn.ModuleList(
-                                    wrap(layer)
-                                    for layer in m
-                                )
-                    setattr(self.decoder.lm.base_model.model.model, n, tmp_module_list)
-                else:
-                    setattr(self.decoder.lm.base_model.model.model, n, wrap(m))
-            self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
-            self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
+    def wrap_fsdp(self):
+        
+         # init FSDP
+        from torch.distributed.fsdp import (
+        CPUOffload,
+        MixedPrecision,
+        ShardingStrategy,
+        BackwardPrefetch,
+        )
         import functools
+        my_auto_wrap_policy = functools.partial(
+            size_based_auto_wrap_policy, min_num_params=1
+        )
+        
+
+        
+        wrapper_kwargs = dict(
+            process_group=None,
+            cpu_offload=CPUOffload(offload_params=False),
+            device_id=torch.cuda.current_device(),
+            auto_wrap_policy=my_auto_wrap_policy,
+            # use_orig_params=True
+        )
+        
+
+
+        # for block in self.decoder.modules():
+        #     block.requires_grad_(False)
+        
+        if torch.cuda.current_device() == 0:
+            total_train_param = 0
+            for name, param in self.decoder.named_parameters():
+                if param.requires_grad:
+                    total_train_param += param.numel()
+            print(f"Train Parameters : {total_train_param * 2 /1024**3} GB")    
+        
+        # wrapper_kwargs['ignored_modules'] = [self.decoder.lm.base_model.model.model.layers[0].self_attn.q_proj.lora_dropout,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.q_proj.lora_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.q_proj.lora_B,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.q_proj.lora_embedding_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.q_proj.lora_embedding_B,
+                                             
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.k_proj.lora_dropout,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.k_proj.lora_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.k_proj.lora_B,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.k_proj.lora_embedding_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.k_proj.lora_embedding_B,
+                                             
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.v_proj.lora_dropout,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.v_proj.lora_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.v_proj.lora_B,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.v_proj.lora_embedding_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.v_proj.lora_embedding_B,
+                                             
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.o_proj.lora_dropout,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.o_proj.lora_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.o_proj.lora_B,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.o_proj.lora_embedding_A,
+        #                                      self.decoder.lm.base_model.model.model.layers[0].self_attn.o_proj.lora_embedding_B]
+        
+        
+        for n, m in self.decoder.lm.base_model.model.model.named_children():
+            if isinstance(m, nn.ModuleList):
+                tmp_module_list = []
+                for li,layer in enumerate(m):
+                    
+                    # def lora_auto_wrap_policy(module: torch.nn.Module, recurse:bool = False, nonwrapped_numel: int = int(1e8)):
+                    #     return True
+                    # wrapper_lora_kwargs = dict(
+                    #     process_group=None,
+                    #     cpu_offload=CPUOffload(offload_params=False),
+                    #     device_id=torch.cuda.current_device(),
+                    #     auto_wrap_policy=lora_auto_wrap_policy,
+                    # )
+                    # with enable_wrap(wrapper_cls=FSDP, **wrapper_lora_kwargs):
+                    #     layer.self_attn.q_proj.lora_dropout = wrap(layer.self_attn.q_proj.lora_dropout)
+                    #     layer.self_attn.q_proj.lora_embedding_A = wrap(layer.self_attn.q_proj.lora_embedding_A)
+                    #     layer.self_attn.q_proj.lora_embedding_B = wrap(layer.self_attn.q_proj.lora_embedding_B)
+                    #     layer.self_attn.q_proj.lora_B = wrap(layer.self_attn.q_proj.lora_B)
+                    #     layer.self_attn.q_proj.lora_A = wrap(layer.self_attn.q_proj.lora_A)
+                    #     layer.self_attn.k_proj.lora_dropout = wrap(layer.self_attn.k_proj.lora_dropout)
+                    #     layer.self_attn.k_proj.lora_embedding_A = wrap(layer.self_attn.k_proj.lora_embedding_A)
+                    #     layer.self_attn.k_proj.lora_embedding_B = wrap(layer.self_attn.k_proj.lora_embedding_B)
+                    #     layer.self_attn.k_proj.lora_B = wrap(layer.self_attn.k_proj.lora_B)
+                    #     layer.self_attn.k_proj.lora_A = wrap(layer.self_attn.k_proj.lora_A)
+                    #     layer.self_attn.v_proj.lora_dropout = wrap(layer.self_attn.v_proj.lora_dropout)
+                    #     layer.self_attn.v_proj.lora_embedding_A = wrap(layer.self_attn.v_proj.lora_embedding_A)
+                    #     layer.self_attn.v_proj.lora_embedding_B = wrap(layer.self_attn.v_proj.lora_embedding_B)
+                    #     layer.self_attn.v_proj.lora_B = wrap(layer.self_attn.v_proj.lora_B)
+                    #     layer.self_attn.v_proj.lora_A = wrap(layer.self_attn.v_proj.lora_A)
+                    #     layer.self_attn.o_proj.lora_dropout = wrap(layer.self_attn.o_proj.lora_dropout)
+                    #     layer.self_attn.o_proj.lora_embedding_A = wrap(layer.self_attn.o_proj.lora_embedding_A)
+                    #     layer.self_attn.o_proj.lora_embedding_B = wrap(layer.self_attn.o_proj.lora_embedding_B)
+                    #     layer.self_attn.o_proj.lora_B = wrap(layer.self_attn.o_proj.lora_B)
+                    #     layer.self_attn.o_proj.lora_A = wrap(layer.self_attn.o_proj.lora_A)
+
+                    # wrapper_lora_kwargs['ignored_modules'] = [layer.self_attn.q_proj.lora_dropout,
+                    #                                      layer.self_attn.q_proj.lora_A,
+                    #                                      layer.self_attn.q_proj.lora_B,
+                    #                                      layer.self_attn.q_proj.lora_embedding_A,
+                    #                                      layer.self_attn.q_proj.lora_embedding_B,
+                                                        
+                    #                                      layer.self_attn.k_proj.lora_dropout,
+                    #                                      layer.self_attn.k_proj.lora_A,
+                    #                                      layer.self_attn.k_proj.lora_B,
+                    #                                      layer.self_attn.k_proj.lora_embedding_A,
+                    #                                      layer.self_attn.k_proj.lora_embedding_B,
+                                                        
+                    #                                      layer.self_attn.v_proj.lora_dropout,
+                    #                                      layer.self_attn.v_proj.lora_A,
+                    #                                      layer.self_attn.v_proj.lora_B,
+                    #                                      layer.self_attn.v_proj.lora_embedding_A,
+                    #                                      layer.self_attn.v_proj.lora_embedding_B,
+                                                        
+                    #                                      layer.self_attn.o_proj.lora_dropout,
+                    #                                      layer.self_attn.o_proj.lora_A,
+                    #                                      layer.self_attn.o_proj.lora_B,
+                    #                                      layer.self_attn.o_proj.lora_embedding_A,
+                    #                                      layer.self_attn.o_proj.lora_embedding_B]
+                    with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                        
+                        tmp_module_list.append(wrap(layer))
+                
+                tmp_module_list = nn.ModuleList(
+                                    tmp_module_list
+                            )
+                setattr(self.decoder.lm.base_model.model.model, n, tmp_module_list)
+            else:
+                with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                    setattr(self.decoder.lm.base_model.model.model, n, wrap(m))
+            
+            with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
+                self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
+
         
         self.visual = self.visual.to(torch.cuda.current_device())
         self.ln_visual = self.ln_visual.to(torch.cuda.current_device())
         self.cformer = self.cformer.to(torch.cuda.current_device())
         
-        my_auto_wrap_policy = functools.partial(
-            size_based_auto_wrap_policy, min_num_params=1
-        )
+
         
         # for block in self.decoder.modules():
         #     block.requires_grad_(False)
@@ -345,3 +461,14 @@ class Emu(nn.Module):
         target_image_embeds = target_image_embeds.view(B, -1, C)
 
         return target_image_embeds
+
+
+
+
+
+
+
+
+
+
+
