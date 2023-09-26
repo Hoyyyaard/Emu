@@ -60,6 +60,12 @@ def parse_args():
     )
     
     parser.add_argument(
+        "--gckpt",
+        action='store_true',
+        default=False,
+    )
+    
+    parser.add_argument(
         "--train",
         action='store_true',
         default=False,
@@ -166,24 +172,26 @@ def finetune_example(emu_model, args):
     
     from src.pretrain_dataset import Pretrain_Dataset
     dataset = Pretrain_Dataset()
-    print(f"Dataset Len : {len(dataset)}")
+    if torch.cuda.current_device() == 0:
+        print(f"Dataset Len : {len(dataset)}")
     
     train_sampler = DistributedSampler(dataset, 
                                 rank=rank, 
                                 num_replicas=torch.cuda.device_count(), 
-                                shuffle=True)
+                                shuffle=False)
     train_loader = torch.utils.data.DataLoader(dataset,
+                                            sampler=train_sampler,
                                             batch_size = 1 ,
                                             num_workers = 1)
     
     # 将模型的参数分成几个组 每个组不同的学习率
-    param_groups = [
-        {'params': emu_model.visual.parameters(), 'lr': 4e-5},
-        {'params': emu_model.decoder.parameters(), 'lr': 3e-5},
-        {'params': emu_model.cformer.parameters(), 'lr': 1e-4}
-    ]
+    # param_groups = [
+    #     {'params': emu_model.visual.parameters(), 'lr': 4e-5},
+    #     {'params': emu_model.decoder.parameters(), 'lr': 3e-5},
+    #     {'params': emu_model.cformer.parameters(), 'lr': 1e-4}
+    # ]
     
-    optimizer = optim.AdamW(param_groups, lr = 1e-4)
+    optimizer = optim.AdamW(emu_model.parameters(), lr = 1e-10, betas=(0.9,0.98), weight_decay=0.05)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -195,6 +203,8 @@ def finetune_example(emu_model, args):
         
         for batch in tqdm.tqdm(train_loader):
             
+            # if epoch == 1:
+            #     print(batch)
             prompt = batch[0][0]
             # print(batch)
             images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.float16) for fp in batch[1]], dim=0)
@@ -217,11 +227,11 @@ def finetune_example(emu_model, args):
             
             ddp_loss[0] += loss.item()
             ddp_loss[1] += 1
-            print(ddp_loss)
+            print(f"{torch.cuda.current_device()} : ",ddp_loss)
             
             torch.cuda.empty_cache()
-            if torch.cuda.current_device() == 0:
-                print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+            # if torch.cuda.current_device() == 0:
+            #     print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
         
         dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)   
         if rank == 0:
@@ -324,8 +334,8 @@ def fsdp_main(rank, world_size, model, args):
     torch.cuda.set_device(rank)
 
     model.wrap_fsdp()
-    
-    model.decoder.lm.gradient_checkpointing_enable()
+    if args.gckpt:
+        model.decoder.lm.gradient_checkpointing_enable()
 
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
