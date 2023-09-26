@@ -78,6 +78,9 @@ def prepare_model(model_name, args):
     
     model = Emu(**model_cfg, args=args) if args.instruct or args.lora_finetune else Emu_pretrain(**model_cfg, args=args)
 
+    if args.train:
+        model.train()
+
     if args.instruct :
         print('Patching LoRA...')
         from peft import LoraConfig, get_peft_model
@@ -163,6 +166,8 @@ def finetune_example(emu_model, args):
     
     from src.pretrain_dataset import Pretrain_Dataset
     dataset = Pretrain_Dataset()
+    print(f"Dataset Len : {len(dataset)}")
+    
     train_sampler = DistributedSampler(dataset, 
                                 rank=rank, 
                                 num_replicas=torch.cuda.device_count(), 
@@ -204,12 +209,15 @@ def finetune_example(emu_model, args):
             loss = emu_model(images,
                             input_tokens.input_ids[0].unsqueeze(0),
                             input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
-            
+            if torch.cuda.current_device() == 0:
+                print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+                
             loss.backward()
             optimizer.step()
             
             ddp_loss[0] += loss.item()
-            ddp_loss[1] += len(prompt)
+            ddp_loss[1] += 1
+            print(ddp_loss)
             
             torch.cuda.empty_cache()
             if torch.cuda.current_device() == 0:
@@ -315,11 +323,9 @@ def fsdp_main(rank, world_size, model, args):
     setup(rank, world_size)
     torch.cuda.set_device(rank)
 
-    
-
     model.wrap_fsdp()
     
-
+    model.decoder.lm.gradient_checkpointing_enable()
 
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
@@ -358,9 +364,16 @@ if __name__ == '__main__':
     print(f"Cformer params : {(sum(p.numel() for p in emu_model.cformer.parameters()))*2/(1024**3):.3f} GB")
     print(f"visual params : {(sum(p.numel() for p in emu_model.visual.parameters()))*2/(1024**3):.3f} GB")
     
-    if args.train:
-        emu_model.train()
+
     
+    
+
+    total_train_param = 0
+    for _,p in emu_model.named_parameters():
+        if p.requires_grad == True:
+            # print(_)
+            total_train_param += p.numel()
+    print(f'emu_model trainable parameters : {total_train_param * 2/1024**3.:3f} GB')
     # if args.lora_finetune:
     #     args.ckpt_path = 'ckpts/Emu-instruct.pt'
     

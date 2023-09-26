@@ -110,7 +110,7 @@ class Emu(nn.Module):
         )
         import functools
         my_auto_wrap_policy = functools.partial(
-            size_based_auto_wrap_policy, min_num_params=1
+            size_based_auto_wrap_policy, min_num_params=1000
         )
         
 
@@ -120,6 +120,7 @@ class Emu(nn.Module):
             cpu_offload=CPUOffload(offload_params=False),
             device_id=torch.cuda.current_device(),
             auto_wrap_policy=my_auto_wrap_policy,
+            limit_all_gathers=True
             # use_orig_params=True
         )
         
@@ -182,20 +183,20 @@ class Emu(nn.Module):
         # for n,b in self.decoder.named_buffers():
         #     b = b.to(torch.cuda.current_device())
         
-        def apply_with_stopping_condition(module, apply_fn, apply_condition=None, stopping_condition=None, **other_args):
-            if stopping_condition(module):
-                return
-            if apply_condition(module):
-                apply_fn(module, **other_args)
+        # def apply_with_stopping_condition(module, apply_fn, apply_condition=None, stopping_condition=None, **other_args):
+        #     if stopping_condition(module):
+        #         return
+        #     if apply_condition(module):
+        #         apply_fn(module, **other_args)
                 
-            for name, child in module.named_children():
-                apply_with_stopping_condition(
-                    child,
-                    apply_fn,
-                    apply_condition=apply_condition,
-                    stopping_condition=stopping_condition,
-                    **other_args
-                )
+        #     for name, child in module.named_children():
+        #         apply_with_stopping_condition(
+        #             child,
+        #             apply_fn,
+        #             apply_condition=apply_condition,
+        #             stopping_condition=stopping_condition,
+        #             **other_args
+        #         )
                 
         # apply_with_stopping_condition(
         #     module=self.decoder,
@@ -208,11 +209,6 @@ class Emu(nn.Module):
         if torch.cuda.current_device() == 0:
             print(f'Decoder params after fsdp {(sum(p.numel() for p in self.decoder.parameters()))*2/(1024**3):.3f} GB')
             print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
-            total_train_param = 0
-            for _,p in self.decoder.named_parameters():
-                if p.requires_grad_ == True:
-                    total_train_param += p.numel()
-            print(f'Decoder trainable parameters : {total_train_param * 2 /1024**3.:3f} GB')
             
         
         

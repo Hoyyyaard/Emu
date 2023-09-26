@@ -123,6 +123,7 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels)
 
         loss = loss_cls + loss_reg
+        # print("loss", loss)
         
         return RegressCausalLMOutputWithPast(
             llm_loss=loss,
@@ -140,6 +141,7 @@ class LLaMAForClsAndRegression(nn.Module):
 
         # self.lm = LlamaForReg.from_pretrained(model_name_or_path)
         self.lm = LlamaForReg(config=LlamaConfig.from_pretrained(model_name_or_path))
+    
 
         self.tokenizer = transformers.LlamaTokenizer.from_pretrained(
             model_name_or_path,
