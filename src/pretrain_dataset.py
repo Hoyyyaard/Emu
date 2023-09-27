@@ -8,7 +8,7 @@ import pickle
 class Pretrain_Dataset(Dataset):
     
     def __init__(self, n_causal=32):
-        self._dataset_path = '/mnt/nfs/share/CLIPORT/emu_data_subtask/'
+        self._dataset_path = 'test_data/'
         self._episodes = []
         
         self._image_holder_tokens = ''

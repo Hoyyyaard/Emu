@@ -19,6 +19,13 @@ from torch.distributed.fsdp.wrap import (
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
 )
+from torch.distributed.fsdp import (
+CPUOffload,
+MixedPrecision,
+ShardingStrategy,
+BackwardPrefetch,
+)
+import functools
         
 from torch.distributed.fsdp.wrap import (
     size_based_auto_wrap_policy,
@@ -102,13 +109,7 @@ class Emu(nn.Module):
     def wrap_fsdp(self):
         
          # init FSDP
-        from torch.distributed.fsdp import (
-        CPUOffload,
-        MixedPrecision,
-        ShardingStrategy,
-        BackwardPrefetch,
-        )
-        import functools
+
         my_auto_wrap_policy = functools.partial(
             size_based_auto_wrap_policy, min_num_params=1000
         )
@@ -228,7 +229,7 @@ class Emu(nn.Module):
         # [B, n_patch, C_vis] --> [B, n_causal, C_llm]
         image_features = self.cformer(image_features)
         # loss from hf lm model
-        loss = self.decoder.lora_forward(image_features, text_input=text_input, text_output=text_output, text_mask=input_mask,
+        loss = self.decoder(image_features, text_input=text_input, text_output=text_output, text_mask=input_mask,
                             output_mask=output_mask)
         return loss
 

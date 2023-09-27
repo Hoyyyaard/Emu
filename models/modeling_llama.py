@@ -233,7 +233,7 @@ class LLaMAForClsAndRegression(nn.Module):
             targets == self.img_end_token_id, -100
         )
 
-        text_embeds = self.lm.model.embed_tokens(text_input)  # [B, seq_len, C]
+        text_embeds = self.lm.base_model.model.model.embed_tokens(text_input)  # [B, seq_len, C]
 
         all_image_indices = (text_input == self.image_token_id).to(image_embeds.device)
 
@@ -251,7 +251,7 @@ class LLaMAForClsAndRegression(nn.Module):
         regress_labels = text_embeds[regress_label_mask]
         regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
 
-        outputs = self.lm.base_model.model(
+        outputs = self.lm(
             inputs_embeds=text_embeds,
             attention_mask=text_mask,
             return_dict=True,
@@ -319,7 +319,7 @@ class LLaMAForClsAndRegression(nn.Module):
         regress_labels = text_embeds[regress_label_mask]
         regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
 
-        outputs = self.lm(
+        outputs = self.lm.base_model.model(
             inputs_embeds=text_embeds,
             attention_mask=text_mask,
             return_dict=True,

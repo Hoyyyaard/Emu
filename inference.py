@@ -46,7 +46,12 @@ def parse_args():
         default='ckpts/multimodal_encoder/pytorch_model.bin',
         help="Emu ckpt path",
     )
-    
+    parser.add_argument(
+        "--mlt_emu",
+        action='store_true',
+        default=False,
+        help="Load Emu-I",
+    )
     parser.add_argument(
         "--epochs",
         type=int,
@@ -101,12 +106,12 @@ def prepare_model(model_name, args):
         model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
 
 
-    print(f"=====> loading from ckpt_path {args.ckpt_path}")
+    # print(f"=====> loading from ckpt_path {args.ckpt_path}")
     
-    ckpt = torch.load(args.ckpt_path, map_location="cpu")
-    msg = model.load_state_dict(ckpt, strict=False)
+    # ckpt = torch.load(args.ckpt_path, map_location="cpu")
+    # msg = model.load_state_dict(ckpt, strict=False)
     # model.eval()
-    print(f"=====> get model.load_state_dict msg: {msg}")
+    # print(f"=====> get model.load_state_dict msg: {msg}")
     
     if args.lora_finetune:
         print('Patching LoRA...')
@@ -181,17 +186,19 @@ def finetune_example(emu_model, args):
                                 shuffle=False)
     train_loader = torch.utils.data.DataLoader(dataset,
                                             sampler=train_sampler,
-                                            batch_size = 1 ,
-                                            num_workers = 1)
+                                            batch_size=1 ,
+                                            num_workers=0)
     
     # 将模型的参数分成几个组 每个组不同的学习率
-    # param_groups = [
-    #     {'params': emu_model.visual.parameters(), 'lr': 4e-5},
-    #     {'params': emu_model.decoder.parameters(), 'lr': 3e-5},
-    #     {'params': emu_model.cformer.parameters(), 'lr': 1e-4}
-    # ]
+    param_groups = [
+        {'params': emu_model.visual.parameters(), 'lr': 4e-5},
+        {'params': emu_model.decoder.parameters(), 'lr': 3e-5},
+        {'params': emu_model.cformer.parameters(), 'lr': 1e-4}
+    ]
     
-    optimizer = optim.AdamW(emu_model.parameters(), lr = 1e-10, betas=(0.9,0.98), weight_decay=0.05)
+    # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
+    # nan但是optimizer step后出现nan
+    optimizer = optim.AdamW(param_groups, lr = 1e-6, betas=(0.9,0.98), weight_decay=0.05, eps=1e-6)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -221,10 +228,33 @@ def finetune_example(emu_model, args):
                             input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
             if torch.cuda.current_device() == 0:
                 print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
-                
-            loss.backward()
-            optimizer.step()
             
+            # with torch.autograd.detect_anomaly():
+            loss.backward()
+
+            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=1, norm_type=2)
+            # max_n,max_grad,max_data = 'none', 0, 0
+            # for n,p in emu_model.named_parameters():
+            #     if p.requires_grad == True:
+            #         try:
+            #             if torch.isnan(p).any():
+            #                 print(f"Nan : {n}")
+            #             if abs(grad := p.grad.max().item()) > max_grad:
+            #                 max_n = n
+            #                 max_grad = grad
+            #                 max_data = p.data.max().item()
+            #         except:
+            #             print(f"Error : {n}")
+            # print(f'{max_n} || {max_data} || {max_grad} ')
+            
+            
+            # print("##################################################################")
+            optimizer.step()
+            # for n,p in emu_model.named_parameters():
+            #     if p.requires_grad == True:
+            #         if torch.isnan(p).any():
+            #             print(f"epoch={epoch},param_name={n}, grad={p.grad}")
+
             ddp_loss[0] += loss.item()
             ddp_loss[1] += 1
             print(f"{torch.cuda.current_device()} : ",ddp_loss)
@@ -333,9 +363,19 @@ def fsdp_main(rank, world_size, model, args):
     setup(rank, world_size)
     torch.cuda.set_device(rank)
 
-    model.wrap_fsdp()
+    if args.mlt_emu and model is None:
+        model = prepare_model('Emu-14B', args).to(torch.float16)
+    # model.to(torch.cuda.current_device())
+    # model = DDP(model)
+        model.wrap_fsdp()
     if args.gckpt:
         model.decoder.lm.gradient_checkpointing_enable()
+        
+    if rank == 0:
+        print(f"total params: {total_params*2/(1024**3):.3f} GB")
+        print(f"Decoder params : {(sum(p.numel() for p in emu_model.decoder.parameters()))*2/(1024**3):.3f} GB")
+        print(f"Cformer params : {(sum(p.numel() for p in emu_model.cformer.parameters()))*2/(1024**3):.3f} GB")
+        print(f"visual params : {(sum(p.numel() for p in emu_model.visual.parameters()))*2/(1024**3):.3f} GB")
 
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
@@ -365,36 +405,13 @@ if __name__ == '__main__':
     # initialize and load model
     args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
-    emu_model = prepare_model('Emu-14B', args).to(torch.float16)
-
-    total_params = sum(p.numel() for p in emu_model.parameters())
-    print(f"total params: {total_params*2/(1024**3):.3f} GB")
-     
-    print(f"Decoder params : {(sum(p.numel() for p in emu_model.decoder.parameters()))*2/(1024**3):.3f} GB")
-    print(f"Cformer params : {(sum(p.numel() for p in emu_model.cformer.parameters()))*2/(1024**3):.3f} GB")
-    print(f"visual params : {(sum(p.numel() for p in emu_model.visual.parameters()))*2/(1024**3):.3f} GB")
-    
-
-    
-    
-
-    total_train_param = 0
-    for _,p in emu_model.named_parameters():
-        if p.requires_grad == True:
-            # print(_)
-            total_train_param += p.numel()
-    print(f'emu_model trainable parameters : {total_train_param * 2/1024**3.:3f} GB')
-    # if args.lora_finetune:
-    #     args.ckpt_path = 'ckpts/Emu-instruct.pt'
-    
-
-
-    # for n,_ in emu_model.named_parameters():
-    #     if "input_layernorm" in n or "post_attention_layernorm" in n:
-    #         print(n)
-    
     WORLD_SIZE = torch.cuda.device_count()
-    # WORLD_SIZE = 8
+    print("world size", WORLD_SIZE)
+    
+    emu_model = None
+    if not args.mlt_emu:
+        emu_model = prepare_model('Emu-14B', args).to(torch.float16)
+    
     mp.spawn(fsdp_main,
         args=(WORLD_SIZE, emu_model, args),
         nprocs=WORLD_SIZE,

@@ -30,7 +30,7 @@ from torch.distributed.fsdp.wrap import (
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = '12356'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -127,7 +127,7 @@ def fsdp_main(rank, world_size, args):
 
     train_kwargs = {'batch_size': args.batch_size, 'sampler': sampler1}
     test_kwargs = {'batch_size': args.test_batch_size, 'sampler': sampler2}
-    cuda_kwargs = {'num_workers': 2,
+    cuda_kwargs = {'num_workers': 0,
                     'pin_memory': True,
                     'shuffle': False}
     train_kwargs.update(cuda_kwargs)
@@ -144,8 +144,8 @@ def fsdp_main(rank, world_size, args):
     init_start_event = torch.cuda.Event(enable_timing=True)
     init_end_event = torch.cuda.Event(enable_timing=True)
 
+    # model = Net().to(torch.cuda.current_device())
     model = Net()
-    
     # import pynvml
     # pynvml.nvmlInit()
     # handle = pynvml.nvmlDeviceGetHandleByIndex(rank) # 0表示显卡标号
@@ -157,6 +157,7 @@ def fsdp_main(rank, world_size, args):
     if rank == 0:
         print(torch.cuda.memory_allocated(rank)/1024**2)
     model = FSDP(model,device_id=rank)
+    # model = DDP(model)
     torch.cuda.empty_cache()
     if rank == 0:
         print(torch.cuda.memory_allocated(rank)/1024**2)
@@ -195,11 +196,11 @@ def fsdp_main(rank, world_size, args):
 if __name__ == '__main__':
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-    parser.add_argument('--batch-size', type=int, default=1, metavar='N',
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--test-batch-size', type=int, default=1, metavar='N',
+    parser.add_argument('--test-batch-size', type=int, default=64, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=10, metavar='N',
+    parser.add_argument('--epochs', type=int, default=1, metavar='N',
                         help='number of epochs to train (default: 14)')
     parser.add_argument('--lr', type=float, default=1.0, metavar='LR',
                         help='learning rate (default: 1.0)')
