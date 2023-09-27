@@ -7,8 +7,8 @@ import pickle
 
 class Pretrain_Dataset(Dataset):
     
-    def __init__(self, n_causal=32):
-        self._dataset_path = 'test_data/'
+    def __init__(self, n_causal=32, _dataset_path='test_data/'):
+        self._dataset_path = _dataset_path
         self._episodes = []
         
         self._image_holder_tokens = ''

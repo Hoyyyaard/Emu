@@ -47,6 +47,12 @@ def parse_args():
         help="Emu ckpt path",
     )
     parser.add_argument(
+        "--data-path",
+        type=str,
+        default='test_data/',
+
+    )
+    parser.add_argument(
         "--mlt_emu",
         action='store_true',
         default=False,
@@ -66,6 +72,11 @@ def parse_args():
     
     parser.add_argument(
         "--gckpt",
+        action='store_true',
+        default=False,
+    )
+    parser.add_argument(
+        "--load_ckpt",
         action='store_true',
         default=False,
     )
@@ -105,13 +116,13 @@ def prepare_model(model_name, args):
         )
         model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
 
-
-    # print(f"=====> loading from ckpt_path {args.ckpt_path}")
-    
-    # ckpt = torch.load(args.ckpt_path, map_location="cpu")
-    # msg = model.load_state_dict(ckpt, strict=False)
-    # model.eval()
-    # print(f"=====> get model.load_state_dict msg: {msg}")
+    if args.load_ckpt:
+        print(f"=====> loading from ckpt_path {args.ckpt_path}")
+        
+        ckpt = torch.load(args.ckpt_path, map_location="cpu")
+        msg = model.load_state_dict(ckpt, strict=False)
+        # model.eval()
+        print(f"=====> get model.load_state_dict msg: {msg}")
     
     if args.lora_finetune:
         print('Patching LoRA...')
@@ -126,7 +137,9 @@ def prepare_model(model_name, args):
         )
         model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
         model.decoder.lm.print_trainable_parameters()
-    
+
+        model.decoder.lm.base_model.model.lm_head.train()
+        model.decoder.lm.base_model.model.stu_regress_head.train()
 
     return model
 
@@ -176,7 +189,7 @@ def finetune_example(emu_model, args):
     rank = torch.cuda.current_device()
     
     from src.pretrain_dataset import Pretrain_Dataset
-    dataset = Pretrain_Dataset()
+    dataset = Pretrain_Dataset(_dataset_path=args.data-path)
     if torch.cuda.current_device() == 0:
         print(f"Dataset Len : {len(dataset)}")
     
@@ -206,9 +219,10 @@ def finetune_example(emu_model, args):
         
         train_sampler.set_epoch(epoch)
         
-        ddp_loss = torch.zeros(2).to(rank)
+        ddp_loss_cls = torch.zeros(2).to(rank)
+        ddp_loss_reg = torch.zeros(2).to(rank)
         
-        for batch in tqdm.tqdm(train_loader):
+        for batch in tqdm.tqdm(train_loader, desc=f'Epoch {epoch}'):
             
             # if epoch == 1:
             #     print(batch)
@@ -223,12 +237,15 @@ def finetune_example(emu_model, args):
                                             add_special_tokens=True,
                                             ).to(torch.cuda.current_device())
             
-            loss = emu_model(images,
+            loss_cls, loss_reg = emu_model(images,
                             input_tokens.input_ids[0].unsqueeze(0),
                             input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
+            # REG的loss会比较小
+            loss = loss_cls + loss_reg 
             if torch.cuda.current_device() == 0:
                 print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
+            optimizer.zero_grad()
             # with torch.autograd.detect_anomaly():
             loss.backward()
 
@@ -255,17 +272,20 @@ def finetune_example(emu_model, args):
             #         if torch.isnan(p).any():
             #             print(f"epoch={epoch},param_name={n}, grad={p.grad}")
 
-            ddp_loss[0] += loss.item()
-            ddp_loss[1] += 1
-            print(f"{torch.cuda.current_device()} : ",ddp_loss)
+            ddp_loss_cls[0] += loss_cls.item()
+            ddp_loss_cls[1] += 1
+            ddp_loss_reg[0] += loss_reg.item()
+            ddp_loss_reg[1] += 1
+            print(f"{torch.cuda.current_device()} || cls : {ddp_loss_cls} || reg : {ddp_loss_reg}")
             
             torch.cuda.empty_cache()
             # if torch.cuda.current_device() == 0:
             #     print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
         
-        dist.all_reduce(ddp_loss, op=dist.ReduceOp.SUM)   
+        dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
+        dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)   
         if rank == 0:
-            print('Train Epoch: {} \tLoss: {:.6f}'.format(epoch, ddp_loss[0] / ddp_loss[1]))
+            print('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
 
         # 在每个周期结束后，更新学习率
         scheduler.step()
@@ -370,12 +390,13 @@ def fsdp_main(rank, world_size, model, args):
         model.wrap_fsdp()
     if args.gckpt:
         model.decoder.lm.gradient_checkpointing_enable()
-        
+    
+    total_params = 0
     if rank == 0:
         print(f"total params: {total_params*2/(1024**3):.3f} GB")
-        print(f"Decoder params : {(sum(p.numel() for p in emu_model.decoder.parameters()))*2/(1024**3):.3f} GB")
-        print(f"Cformer params : {(sum(p.numel() for p in emu_model.cformer.parameters()))*2/(1024**3):.3f} GB")
-        print(f"visual params : {(sum(p.numel() for p in emu_model.visual.parameters()))*2/(1024**3):.3f} GB")
+        print(f"Decoder params : {(sum(p.numel() for p in model.decoder.parameters()))*2/(1024**3):.3f} GB")
+        print(f"Cformer params : {(sum(p.numel() for p in model.cformer.parameters()))*2/(1024**3):.3f} GB")
+        print(f"visual params : {(sum(p.numel() for p in model.visual.parameters()))*2/(1024**3):.3f} GB")
 
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
