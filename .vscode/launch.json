@@ -18,6 +18,7 @@
             "args":[
                 "--train",
                 "--lora_finetune",
+                "--mlt_emu"
             ]
 
         }

@@ -41,13 +41,13 @@ def parse_args():
         help="Load Emu-I",
     )
     parser.add_argument(
-        "--ckpt-path",
+        "--ckpt_path",
         type=str,
         default='ckpts/multimodal_encoder/pytorch_model.bin',
         help="Emu ckpt path",
     )
     parser.add_argument(
-        "--data-path",
+        "--data_path",
         type=str,
         default='test_data/',
 
@@ -189,7 +189,7 @@ def finetune_example(emu_model, args):
     rank = torch.cuda.current_device()
     
     from src.pretrain_dataset import Pretrain_Dataset
-    dataset = Pretrain_Dataset(_dataset_path=args.data-path)
+    dataset = Pretrain_Dataset(_dataset_path=args.data_path)
     if torch.cuda.current_device() == 0:
         print(f"Dataset Len : {len(dataset)}")
     
@@ -211,7 +211,7 @@ def finetune_example(emu_model, args):
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
     # nan但是optimizer step后出现nan
-    optimizer = optim.AdamW(param_groups, lr = 1e-6, betas=(0.9,0.98), weight_decay=0.05, eps=1e-6)
+    optimizer = optim.AdamW(param_groups, lr = 1e-4, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -222,7 +222,7 @@ def finetune_example(emu_model, args):
         ddp_loss_cls = torch.zeros(2).to(rank)
         ddp_loss_reg = torch.zeros(2).to(rank)
         
-        for batch in tqdm.tqdm(train_loader, desc=f'Epoch {epoch}'):
+        for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
             
             # if epoch == 1:
             #     print(batch)
@@ -242,16 +242,48 @@ def finetune_example(emu_model, args):
                             input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
             # REG的loss会比较小
             loss = loss_cls + loss_reg 
-            if torch.cuda.current_device() == 0:
-                print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+            # if torch.cuda.current_device() == 0:
+            #     print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
             optimizer.zero_grad()
             # with torch.autograd.detect_anomaly():
             loss.backward()
 
-            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=1, norm_type=2)
+            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.visual.parameters(), max_norm=10, norm_type=2)
+            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.cformer.parameters(), max_norm=10, norm_type=2)
+            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.decoder.parameters(), max_norm=10, norm_type=2)
+            torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=10, norm_type=2)
+            
             # max_n,max_grad,max_data = 'none', 0, 0
             # for n,p in emu_model.named_parameters():
+            #     if p.requires_grad == True:
+            #         try:
+            #             # if torch.isnan(p).any():
+            #             #     print(f"Nan : {n}")
+            #             if abs(grad := p.grad.max().item()) > max_grad:
+            #                 max_n = n
+            #                 max_grad = grad
+            #                 max_data = p.data.max().item()
+            #         except:
+            #             # print(f"Error : {n}")
+            #             pass
+            # print(f'{max_n} || {max_grad} ')
+            
+            # for n, m in emu_model.decoder.lm.base_model.model.model.named_children():
+            #     if isinstance(m, torch.nn.ModuleList):
+            #         tmp_module_list = []
+            #         for li,layer in enumerate(m):
+            #             layer.clip_grad_norm_(max_norm=10)  
+            #             tmp_module_list.append(layer)  
+            #         tmp_module_list = torch.nn.ModuleList(tmp_module_list)
+            #         setattr(emu_model.decoder.lm.base_model.model.model, n, tmp_module_list)  
+            #     else:
+            #         m.clip_grad_norm_(max_norm=10) 
+            #         setattr(emu_model.decoder.lm.base_model.model.model, n, m)
+        
+            
+            # max_n,max_grad,max_data = 'none', 0, 0
+            # for n,p in emu_model.decoder.lm.base_model.model.named_parameters():
             #     if p.requires_grad == True:
             #         try:
             #             if torch.isnan(p).any():
@@ -262,7 +294,7 @@ def finetune_example(emu_model, args):
             #                 max_data = p.data.max().item()
             #         except:
             #             print(f"Error : {n}")
-            # print(f'{max_n} || {max_data} || {max_grad} ')
+            # print(f'After Norm {max_n} || {max_data} || {max_grad} ')
             
             
             # print("##################################################################")
@@ -276,12 +308,18 @@ def finetune_example(emu_model, args):
             ddp_loss_cls[1] += 1
             ddp_loss_reg[0] += loss_reg.item()
             ddp_loss_reg[1] += 1
-            print(f"{torch.cuda.current_device()} || cls : {ddp_loss_cls} || reg : {ddp_loss_reg}")
-            
+            print(f"[epoch:{epoch} rank:{torch.cuda.current_device()} batch:{bi}] || cls : {loss_cls.item()} || reg : {loss_reg.item()}")
+            # torch.cuda.barrier()
             torch.cuda.empty_cache()
             # if torch.cuda.current_device() == 0:
             #     print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
-        
+
+            if bi % 10 == 0:
+                dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
+                dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
+                if rank == 0  :
+                    print('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
+            
         dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
         dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)   
         if rank == 0:
@@ -370,7 +408,7 @@ def instruct_example(emu_model):
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = '12545'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -387,7 +425,7 @@ def fsdp_main(rank, world_size, model, args):
         model = prepare_model('Emu-14B', args).to(torch.float16)
     # model.to(torch.cuda.current_device())
     # model = DDP(model)
-        model.wrap_fsdp()
+    model.wrap_fsdp()
     if args.gckpt:
         model.decoder.lm.gradient_checkpointing_enable()
     

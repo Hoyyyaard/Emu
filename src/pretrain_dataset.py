@@ -21,7 +21,7 @@ class Pretrain_Dataset(Dataset):
     def _parse_dataset(self):
         for task in os.listdir(self._dataset_path):
             p1 = os.path.join(self._dataset_path, task)
-            for epi in os.listdir(p1)[:1]:
+            for epi in os.listdir(p1):
                 p2 = os.path.join(p1, epi)
                 sequence = ''
                 state_files = []
