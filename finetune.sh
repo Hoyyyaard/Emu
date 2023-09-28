@@ -1,2 +1,2 @@
-export CUDA_VISIBLE_DEVICES=2,3,5,7
-python inference.py --lora_finetune --train --mlt_emu --data_path /root/Project/emu_data_subtask/
+export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
+python inference.py --lora_finetune --train --mlt_emu --data_path /root/Projects/emu_data_subtask/ --load_ckpt --val_data_path /root/Projects/emu_data_subtask_val/

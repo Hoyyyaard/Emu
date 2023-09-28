@@ -31,10 +31,29 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(level=logging.DEBUG)
+# 获取文件日志句柄并设置日志级别，第二层过滤
+handler = logging.FileHandler("results/train/train.log", encoding='UTF-8')
+handler.setLevel(logging.INFO)
+# 生成并设置文件日志格式
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+# console相当于控制台输出，handler文件输出。获取流句柄并设置日志级别，第二层过滤
+console = logging.StreamHandler()
+console.setLevel(logging.DEBUG)
+# 为logger对象添加句柄
+logger.addHandler(handler)
+logger.addHandler(console)
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        
         "--instruct",
         action='store_true',
         default=False,
@@ -48,6 +67,12 @@ def parse_args():
     )
     parser.add_argument(
         "--data_path",
+        type=str,
+        default='test_data/',
+
+    )
+    parser.add_argument(
+        "--val_data_path",
         type=str,
         default='test_data/',
 
@@ -95,7 +120,7 @@ def parse_args():
 def prepare_model(model_name, args):
     with open(f'models/{model_name}.json', "r", encoding="utf8") as f:
         model_cfg = json.load(f)
-    print(f"=====> model_cfg: {model_cfg}")
+    logger.info(f"=====> model_cfg: {model_cfg}")
 
     
     model = Emu(**model_cfg, args=args) if args.instruct or args.lora_finetune else Emu_pretrain(**model_cfg, args=args)
@@ -117,12 +142,12 @@ def prepare_model(model_name, args):
         model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
 
     if args.load_ckpt:
-        print(f"=====> loading from ckpt_path {args.ckpt_path}")
+        logger.info(f"=====> loading from ckpt_path {args.ckpt_path}")
         
         ckpt = torch.load(args.ckpt_path, map_location="cpu")
         msg = model.load_state_dict(ckpt, strict=False)
         # model.eval()
-        print(f"=====> get model.load_state_dict msg: {msg}")
+        logger.info(f"=====> get model.load_state_dict msg: {msg}")
     
     if args.lora_finetune:
         print('Patching LoRA...')
@@ -190,8 +215,10 @@ def finetune_example(emu_model, args):
     
     from src.pretrain_dataset import Pretrain_Dataset
     dataset = Pretrain_Dataset(_dataset_path=args.data_path)
+    val_dataset = Pretrain_Dataset(_dataset_path=args.val_data_path)
+    
     if torch.cuda.current_device() == 0:
-        print(f"Dataset Len : {len(dataset)}")
+        logger.info(f"Dataset Len : {len(dataset)} || World Size : {torch.cuda.device_count()}")
     
     train_sampler = DistributedSampler(dataset, 
                                 rank=rank, 
@@ -200,7 +227,15 @@ def finetune_example(emu_model, args):
     train_loader = torch.utils.data.DataLoader(dataset,
                                             sampler=train_sampler,
                                             batch_size=1 ,
-                                            num_workers=0)
+                                            num_workers=4)
+    val_sampler = DistributedSampler(val_dataset, 
+                                rank=rank, 
+                                num_replicas=torch.cuda.device_count(), 
+                                shuffle=False)
+    val_loader = torch.utils.data.DataLoader(val_dataset,
+                                            sampler=val_sampler,
+                                            batch_size=1 ,
+                                            num_workers=4)
     
     # 将模型的参数分成几个组 每个组不同的学习率
     param_groups = [
@@ -241,7 +276,7 @@ def finetune_example(emu_model, args):
                             input_tokens.input_ids[0].unsqueeze(0),
                             input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
             # REG的loss会比较小
-            loss = loss_cls + loss_reg 
+            loss = loss_cls + loss_reg * 10
             # if torch.cuda.current_device() == 0:
             #     print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
@@ -308,7 +343,8 @@ def finetune_example(emu_model, args):
             ddp_loss_cls[1] += 1
             ddp_loss_reg[0] += loss_reg.item()
             ddp_loss_reg[1] += 1
-            print(f"[epoch:{epoch} rank:{torch.cuda.current_device()} batch:{bi}] || cls : {loss_cls.item()} || reg : {loss_reg.item()}")
+            if rank == 0  :
+                logger.info(f"[epoch:{epoch} rank:{torch.cuda.current_device()} batch:{bi}] || cls : {loss_cls.item()} || reg : {loss_reg.item()}")
             # torch.cuda.barrier()
             torch.cuda.empty_cache()
             # if torch.cuda.current_device() == 0:
@@ -318,12 +354,38 @@ def finetune_example(emu_model, args):
                 dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
                 dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
                 if rank == 0  :
-                    print('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
+                    logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
+            
+            if bi % 50 == 0:
+                val_ddp_loss_cls = torch.zeros(2).to(rank)
+                val_ddp_loss_reg = torch.zeros(2).to(rank)
+                with torch.no_grad():
+                    for vi, vbatch in enumerate(tqdm.tqdm(val_loader, desc=f'Test {epoch}')):
+                        prompt = vbatch[0][0]
+                        # print(batch)
+                        images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.float16) for fp in vbatch[1]], dim=0)
+                        input_tokens = emu_model.decoder.tokenizer(
+                                                        prompt, 
+                                                        padding="longest", 
+                                                        return_tensors="pt",
+                                                        add_special_tokens=True,
+                                                        ).to(torch.cuda.current_device())
+                        val_loss_cls, val_loss_reg = emu_model(images,
+                                        input_tokens.input_ids[0].unsqueeze(0),
+                                        input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
+                        val_ddp_loss_cls[0] += val_loss_cls.item()
+                        val_ddp_loss_cls[1] += 1
+                        val_ddp_loss_reg[0] += val_loss_reg.item()
+                        val_ddp_loss_reg[1] += 1
+                    dist.all_reduce(val_ddp_loss_cls, op=dist.ReduceOp.SUM)   
+                    dist.all_reduce(val_ddp_loss_reg, op=dist.ReduceOp.SUM)
+                    if rank == 0  :
+                        logger.info('test Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, val_ddp_loss_cls[0] / val_ddp_loss_cls[1], val_ddp_loss_reg[0] / val_ddp_loss_reg[1]))
             
         dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
         dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)   
         if rank == 0:
-            print('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
+            logger.info('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
 
         # 在每个周期结束后，更新学习率
         scheduler.step()
@@ -431,10 +493,10 @@ def fsdp_main(rank, world_size, model, args):
     
     total_params = 0
     if rank == 0:
-        print(f"total params: {total_params*2/(1024**3):.3f} GB")
-        print(f"Decoder params : {(sum(p.numel() for p in model.decoder.parameters()))*2/(1024**3):.3f} GB")
-        print(f"Cformer params : {(sum(p.numel() for p in model.cformer.parameters()))*2/(1024**3):.3f} GB")
-        print(f"visual params : {(sum(p.numel() for p in model.visual.parameters()))*2/(1024**3):.3f} GB")
+        logger.info(f"total params: {total_params*2/(1024**3):.3f} GB")
+        logger.info(f"Decoder params : {(sum(p.numel() for p in model.decoder.parameters()))*2/(1024**3):.3f} GB")
+        logger.info(f"Cformer params : {(sum(p.numel() for p in model.cformer.parameters()))*2/(1024**3):.3f} GB")
+        logger.info(f"visual params : {(sum(p.numel() for p in model.visual.parameters()))*2/(1024**3):.3f} GB")
 
     # emu_model = FSDP(emu_model, 
     #                 auto_wrap_policy=size_based_auto_wrap_policy,
@@ -465,7 +527,7 @@ if __name__ == '__main__':
     args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
     WORLD_SIZE = torch.cuda.device_count()
-    print("world size", WORLD_SIZE)
+    logger.info("world size", WORLD_SIZE)
     
     emu_model = None
     if not args.mlt_emu:
