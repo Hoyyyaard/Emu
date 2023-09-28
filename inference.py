@@ -470,7 +470,7 @@ def instruct_example(emu_model):
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12545'
+    os.environ['MASTER_PORT'] = '12598'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -527,7 +527,7 @@ if __name__ == '__main__':
     args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
     WORLD_SIZE = torch.cuda.device_count()
-    logger.info("world size", WORLD_SIZE)
+    logger.info(f"world size : {WORLD_SIZE}")
     
     emu_model = None
     if not args.mlt_emu:
