@@ -117,12 +117,13 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             # calculate the regressive loss for image tokens
             # loss_freg = torch.nn.MSELoss(size_average = False)
             loss_freg = torch.nn.MSELoss()
+            hidden_states = torch.flatten(hidden_states, start_dim=0, end_dim=1)
             image_logits = hidden_states[regress_mask]
             # image_logits = image_logits[:-1,:]  
             image_logits_aft_reg_head = self.stu_regress_head(image_logits)
             loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels)
 
-        loss = loss_cls + loss_reg
+        # loss = loss_cls + loss_reg
         # print("loss", loss)
         
         return RegressCausalLMOutputWithPast(
@@ -233,6 +234,9 @@ class LLaMAForClsAndRegression(nn.Module):
             targets == self.img_end_token_id, -100
         )
 
+        TB, max_seq_len = text_input.shape
+        text_input = torch.flatten(text_input, start_dim=0, end_dim=1)
+
         text_embeds = self.lm.base_model.model.model.embed_tokens(text_input)  # [B, seq_len, C]
 
         all_image_indices = (text_input == self.image_token_id).to(image_embeds.device)
@@ -251,6 +255,8 @@ class LLaMAForClsAndRegression(nn.Module):
         regress_labels = text_embeds[regress_label_mask]
         regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
 
+        text_embeds = text_embeds.view(TB, max_seq_len, -1)
+        
         outputs = self.lm(
             inputs_embeds=text_embeds,
             attention_mask=text_mask,

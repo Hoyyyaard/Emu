@@ -88,6 +88,11 @@ def parse_args():
         type=int,
         default=10,
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=1,
+    )
     
     parser.add_argument(
         "--lora_finetune",
@@ -149,7 +154,7 @@ def prepare_model(model_name, args):
         # model.eval()
         logger.info(f"=====> get model.load_state_dict msg: {msg}")
     
-    if args.lora_finetune:
+    if args.lora_finetune and args.train:
         print('Patching LoRA...')
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
@@ -223,11 +228,11 @@ def finetune_example(emu_model, args):
     train_sampler = DistributedSampler(dataset, 
                                 rank=rank, 
                                 num_replicas=torch.cuda.device_count(), 
-                                shuffle=False)
+                                shuffle=True)
     train_loader = torch.utils.data.DataLoader(dataset,
                                             sampler=train_sampler,
-                                            batch_size=1 ,
-                                            num_workers=4)
+                                            batch_size=args.batch_size ,
+                                            num_workers=1)
     val_sampler = DistributedSampler(val_dataset, 
                                 rank=rank, 
                                 num_replicas=torch.cuda.device_count(), 
@@ -235,7 +240,7 @@ def finetune_example(emu_model, args):
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                             sampler=val_sampler,
                                             batch_size=1 ,
-                                            num_workers=4)
+                                            num_workers=1)
     
     # 将模型的参数分成几个组 每个组不同的学习率
     param_groups = [
@@ -259,22 +264,33 @@ def finetune_example(emu_model, args):
         
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
             
-            # if epoch == 1:
-            #     print(batch)
-            prompt = batch[0][0]
-            # print(batch)
-            images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.float16) for fp in batch[1]], dim=0)
+            batch_prompts = list(batch[0])
+            fps = batch[1]
+            # unzip fps
+            batch_fps = []
+            for bii in range(len(batch_prompts)):
+                tmp_list = []
+                for fp in fps:
+                    if not fp[bii] == 'None':
+                        tmp_list.append(fp[bii])
+                batch_fps.extend(tmp_list)
             
-            input_tokens = emu_model.decoder.tokenizer(
-                                            prompt, 
+            batch_images = torch.cat([process_img(img_path=fp, 
+                                            device=torch.cuda.current_device()).to(torch.float16) 
+                                            for fp in batch_fps 
+                                            ],
+                               dim=0)
+            # [B, max_seq_len]
+            batch_input_tokens = emu_model.decoder.tokenizer(
+                                            batch_prompts, 
                                             padding="longest", 
                                             return_tensors="pt",
                                             add_special_tokens=True,
                                             ).to(torch.cuda.current_device())
             
-            loss_cls, loss_reg = emu_model(images,
-                            input_tokens.input_ids[0].unsqueeze(0),
-                            input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
+            loss_cls, loss_reg = emu_model(batch_images,
+                            batch_input_tokens.input_ids,
+                            batch_input_tokens.attention_mask).llm_loss
             # REG的loss会比较小
             loss = loss_cls + loss_reg * 10
             # if torch.cuda.current_device() == 0:
@@ -340,11 +356,11 @@ def finetune_example(emu_model, args):
             #             print(f"epoch={epoch},param_name={n}, grad={p.grad}")
 
             ddp_loss_cls[0] += loss_cls.item()
-            ddp_loss_cls[1] += 1
+            ddp_loss_cls[1] += args.batch_size
             ddp_loss_reg[0] += loss_reg.item()
-            ddp_loss_reg[1] += 1
-            if rank == 0  :
-                logger.info(f"[epoch:{epoch} rank:{torch.cuda.current_device()} batch:{bi}] || cls : {loss_cls.item()} || reg : {loss_reg.item()}")
+            ddp_loss_reg[1] += args.batch_size
+            # if rank == 0  :
+            #     logger.info(f"[epoch:{epoch} rank:{torch.cuda.current_device()} batch:{args.batch_size}] || cls : {loss_cls.item()} || reg : {loss_reg.item()}")
             # torch.cuda.barrier()
             torch.cuda.empty_cache()
             # if torch.cuda.current_device() == 0:
@@ -380,7 +396,7 @@ def finetune_example(emu_model, args):
                     dist.all_reduce(val_ddp_loss_cls, op=dist.ReduceOp.SUM)   
                     dist.all_reduce(val_ddp_loss_reg, op=dist.ReduceOp.SUM)
                     if rank == 0  :
-                        logger.info('test Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, val_ddp_loss_cls[0] / val_ddp_loss_cls[1], val_ddp_loss_reg[0] / val_ddp_loss_reg[1]))
+                        logger.info('Test Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, val_ddp_loss_cls[0] / val_ddp_loss_cls[1], val_ddp_loss_reg[0] / val_ddp_loss_reg[1]))
             
         dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
         dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)   
@@ -470,7 +486,7 @@ def instruct_example(emu_model):
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12598'
+    os.environ['MASTER_PORT'] = '12589'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)

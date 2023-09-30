@@ -19,6 +19,7 @@ class Pretrain_Dataset(Dataset):
         self._parse_dataset()
         
     def _parse_dataset(self):
+        max_fp_len = 0
         for task in os.listdir(self._dataset_path):
             p1 = os.path.join(self._dataset_path, task)
             for epi in os.listdir(p1):
@@ -35,6 +36,11 @@ class Pretrain_Dataset(Dataset):
                 state_files.append(f'{p2}/origin_rgb.png')
                 state_files.extend([f'{p2}/subtask{j+1}_rgb.png' for j in range(len(list(task_info.values()))-1)])
                 self._episodes.append([sequence, state_files])
+                if len(state_files) > max_fp_len:
+                    max_fp_len = len(state_files)
+        for ei,epi in enumerate(self._episodes):
+            pad_num = max_fp_len - len(epi[1])
+            self._episodes[ei][1].extend(['None']  * pad_num)
     
     def _system_prompt(self, task):
         return f'Task : {task}; Initial State : {self._image_holder_tokens}.\n Details:\n'
