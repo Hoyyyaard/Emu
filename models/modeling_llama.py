@@ -112,8 +112,8 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = torch.nn.CrossEntropyLoss()
-            loss_cls = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1))
-            
+            loss_cls = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1)) 
+            # TODO:这里一次性重建了太多 image loss感觉有点顶不住 而且反向传播也不太行
             # calculate the regressive loss for image tokens
             # loss_freg = torch.nn.MSELoss(size_average = False)
             loss_freg = torch.nn.MSELoss()
@@ -121,8 +121,16 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             image_logits = hidden_states[regress_mask]
             # image_logits = image_logits[:-1,:]  
             image_logits_aft_reg_head = self.stu_regress_head(image_logits)
-            loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels)
-
+            # 分开计算每一个image regression的loss
+            loss_reg_list = []
+            # print(len(image_logits_aft_reg_head))
+            for pi in range(int(len(image_logits_aft_reg_head)/33) - 1):
+                # for ppi in range(len(regress_mask)):
+                #     mask = regress_mask[pi*33: (pi+1)*33]
+                loss_reg_list.append(loss_freg(image_logits_aft_reg_head[pi*33: (pi+1)*33], regress_labels[pi*33: (pi+1)*33]) )
+            # loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels) 
+            loss_reg = sum(loss_reg_list)
+            
         # loss = loss_cls + loss_reg
         # print("loss", loss)
         

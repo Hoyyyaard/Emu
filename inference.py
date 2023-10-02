@@ -33,22 +33,6 @@ import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 import logging
 
-logger = logging.getLogger(__name__)
-logger.setLevel(level=logging.DEBUG)
-# 获取文件日志句柄并设置日志级别，第二层过滤
-handler = logging.FileHandler("results/train/train.log", encoding='UTF-8')
-handler.setLevel(logging.INFO)
-# 生成并设置文件日志格式
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-# console相当于控制台输出，handler文件输出。获取流句柄并设置日志级别，第二层过滤
-console = logging.StreamHandler()
-console.setLevel(logging.DEBUG)
-# 为logger对象添加句柄
-logger.addHandler(handler)
-logger.addHandler(console)
-
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -74,9 +58,17 @@ def parse_args():
     parser.add_argument(
         "--val_data_path",
         type=str,
-        default='test_data/',
+        default='val_data/',
 
     )
+    
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default='results/debug/',
+
+    )
+    
     parser.add_argument(
         "--mlt_emu",
         action='store_true',
@@ -121,6 +113,27 @@ def parse_args():
 
     return args
 
+args = parse_args()
+
+if not os.path.exists(args.log_dir):
+    os.makedirs(args.log_dir)
+logger = logging.getLogger(__name__)
+logger.setLevel(level=logging.DEBUG)
+# 获取文件日志句柄并设置日志级别，第二层过滤
+handler = logging.FileHandler(f"{args.log_dir}/log.log", encoding='UTF-8')
+handler.setLevel(logging.INFO)
+# 生成并设置文件日志格式
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+# console相当于控制台输出，handler文件输出。获取流句柄并设置日志级别，第二层过滤
+console = logging.StreamHandler()
+console.setLevel(logging.DEBUG)
+# 为logger对象添加句柄
+logger.addHandler(handler)
+logger.addHandler(console)
+
+from torch.utils.tensorboard import SummaryWriter  
+writer = SummaryWriter(f'{args.log_dir}/log')
 
 def prepare_model(model_name, args):
     with open(f'models/{model_name}.json', "r", encoding="utf8") as f:
@@ -232,7 +245,7 @@ def finetune_example(emu_model, args):
     train_loader = torch.utils.data.DataLoader(dataset,
                                             sampler=train_sampler,
                                             batch_size=args.batch_size ,
-                                            num_workers=1)
+                                            num_workers=4)
     val_sampler = DistributedSampler(val_dataset, 
                                 rank=rank, 
                                 num_replicas=torch.cuda.device_count(), 
@@ -244,16 +257,18 @@ def finetune_example(emu_model, args):
     
     # 将模型的参数分成几个组 每个组不同的学习率
     param_groups = [
-        {'params': emu_model.visual.parameters(), 'lr': 4e-5},
-        {'params': emu_model.decoder.parameters(), 'lr': 3e-5},
-        {'params': emu_model.cformer.parameters(), 'lr': 1e-4}
+        {'params': emu_model.visual.parameters(), 'lr': 4e-3},
+        {'params': emu_model.decoder.parameters(), 'lr': 3e-3},
+        {'params': emu_model.cformer.parameters(), 'lr': 1e-3}
     ]
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
     # nan但是optimizer step后出现nan
-    optimizer = optim.AdamW(param_groups, lr = 1e-4, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
+    optimizer = optim.AdamW(param_groups, lr = 1e-3, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
+    
+    global_step = 0
     
     for epoch in range(1, args.epochs + 1):
         
@@ -263,6 +278,8 @@ def finetune_example(emu_model, args):
         ddp_loss_reg = torch.zeros(2).to(rank)
         
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
+            
+            global_step += 1
             
             batch_prompts = list(batch[0])
             fps = batch[1]
@@ -291,19 +308,24 @@ def finetune_example(emu_model, args):
             loss_cls, loss_reg = emu_model(batch_images,
                             batch_input_tokens.input_ids,
                             batch_input_tokens.attention_mask).llm_loss
+            
+            if (rank == 0):
+                writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
+                writer.add_scalar("train_loss_cls_rank0", loss_cls, global_step=global_step)
             # REG的loss会比较小
-            loss = loss_cls + loss_reg * 10
+            loss = loss_cls + loss_reg 
             # if torch.cuda.current_device() == 0:
             #     print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
             optimizer.zero_grad()
             # with torch.autograd.detect_anomaly():
-            loss.backward()
+            loss_reg.backward()
 
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.visual.parameters(), max_norm=10, norm_type=2)
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.cformer.parameters(), max_norm=10, norm_type=2)
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.decoder.parameters(), max_norm=10, norm_type=2)
-            torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=10, norm_type=2)
+            
+            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=10, norm_type=2)
             
             # max_n,max_grad,max_data = 'none', 0, 0
             # for n,p in emu_model.named_parameters():
@@ -370,6 +392,8 @@ def finetune_example(emu_model, args):
                 dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
                 dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
                 if rank == 0  :
+                    writer.add_scalar("train_loss_reg_ddp", ddp_loss_reg[0], global_step=global_step)
+                    writer.add_scalar("train_loss_cls_ddp", ddp_loss_cls[0], global_step=global_step)
                     logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
             
             if bi % 50 == 0:
@@ -377,18 +401,32 @@ def finetune_example(emu_model, args):
                 val_ddp_loss_reg = torch.zeros(2).to(rank)
                 with torch.no_grad():
                     for vi, vbatch in enumerate(tqdm.tqdm(val_loader, desc=f'Test {epoch}')):
-                        prompt = vbatch[0][0]
-                        # print(batch)
-                        images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.float16) for fp in vbatch[1]], dim=0)
-                        input_tokens = emu_model.decoder.tokenizer(
-                                                        prompt, 
+                        batch_prompts = list(vbatch[0])
+                        fps = vbatch[1]
+                        # unzip fps
+                        batch_fps = []
+                        for bii in range(len(batch_prompts)):
+                            tmp_list = []
+                            for fp in fps:
+                                if not fp[bii] == 'None':
+                                    tmp_list.append(fp[bii])
+                            batch_fps.extend(tmp_list)
+                        
+                        batch_images = torch.cat([process_img(img_path=fp, 
+                                                        device=torch.cuda.current_device()).to(torch.float16) 
+                                                        for fp in batch_fps 
+                                                        ],
+                                        dim=0)
+                        # [B, max_seq_len]
+                        batch_input_tokens = emu_model.decoder.tokenizer(
+                                                        batch_prompts, 
                                                         padding="longest", 
                                                         return_tensors="pt",
                                                         add_special_tokens=True,
                                                         ).to(torch.cuda.current_device())
-                        val_loss_cls, val_loss_reg = emu_model(images,
-                                        input_tokens.input_ids[0].unsqueeze(0),
-                                        input_tokens.attention_mask[0].unsqueeze(0)).llm_loss
+                        val_loss_cls, val_loss_reg = emu_model(batch_images,
+                                        batch_input_tokens.input_ids,
+                                        batch_input_tokens.attention_mask).llm_loss
                         val_ddp_loss_cls[0] += val_loss_cls.item()
                         val_ddp_loss_cls[1] += 1
                         val_ddp_loss_reg[0] += val_loss_reg.item()
@@ -396,6 +434,8 @@ def finetune_example(emu_model, args):
                     dist.all_reduce(val_ddp_loss_cls, op=dist.ReduceOp.SUM)   
                     dist.all_reduce(val_ddp_loss_reg, op=dist.ReduceOp.SUM)
                     if rank == 0  :
+                        writer.add_scalar("test_loss_reg_ddp", val_ddp_loss_reg[0], global_step=global_step)
+                        writer.add_scalar("test_loss_cls_ddp", val_ddp_loss_cls[0], global_step=global_step)
                         logger.info('Test Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, val_ddp_loss_cls[0] / val_ddp_loss_cls[1], val_ddp_loss_reg[0] / val_ddp_loss_reg[1]))
             
         dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
@@ -537,7 +577,6 @@ def fsdp_main(rank, world_size, model, args):
 
 if __name__ == '__main__':
     
-    args = parse_args()
 
     # initialize and load model
     args.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
