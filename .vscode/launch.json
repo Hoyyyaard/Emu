@@ -23,7 +23,8 @@
                 "--gckpt",
                 "--log_dir","results/train/debug",
                 "--load_ckpt",
-                "--epoch","100"
+                "--epoch","100",
+                "--lr_base","0.0001"
             ]
 
         }

@@ -455,7 +455,7 @@ def finetune_example(emu_model, args):
         #     logger.info('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
 
         # 在每个周期结束后，更新学习率
-        scheduler.step()
+        # scheduler.step()
         
     # image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
     # text = 'There are two dogs.[IMG]'

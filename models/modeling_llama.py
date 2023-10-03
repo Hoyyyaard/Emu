@@ -111,7 +111,7 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = torch.nn.CrossEntropyLoss()
+            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
             loss_cls = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1)) 
             # TODO:这里一次性重建了太多 image loss感觉有点顶不住 而且反向传播也不太行
             # calculate the regressive loss for image tokens
@@ -127,7 +127,7 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             for pi in range(int(len(image_logits_aft_reg_head)/33) - 1):
                 # for ppi in range(len(regress_mask)):
                 #     mask = regress_mask[pi*33: (pi+1)*33]
-                loss_reg_list.append(loss_freg(image_logits_aft_reg_head[pi*33: (pi+1)*33], regress_labels[pi*33: (pi+1)*33]) )
+                loss_reg_list.append(loss_freg(image_logits_aft_reg_head[pi*33: (pi+1)*33-1], regress_labels[pi*32: (pi+1)*32]) )
             # loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels) 
             loss_reg = sum(loss_reg_list)
             
@@ -257,83 +257,19 @@ class LLaMAForClsAndRegression(nn.Module):
 
         text_embeds[all_image_indices] = image_embeds
 
-        regress_label_mask = ((text_input == self.image_token_id) + (text_input == self.img_end_token_id)).to(
-            image_embeds.device)
 
-        regress_labels = text_embeds[regress_label_mask]
+        # regress_label_mask = ((text_input == self.image_token_id) + (text_input == self.img_end_token_id)).to(
+        #     image_embeds.device)
+        # regress_labels = text_embeds[regress_label_mask] 
+        # regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
+
+        regress_label_mask = (text_input == self.image_token_id).to(image_embeds.device)
+        regress_labels = text_embeds[regress_label_mask] 
         regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
-
+        
         text_embeds = text_embeds.view(TB, max_seq_len, -1)
         
         outputs = self.lm(
-            inputs_embeds=text_embeds,
-            attention_mask=text_mask,
-            return_dict=True,
-            labels=targets,                             # only text embedding is not -100(ignore)
-            regress_mask=regress_mask,                  # true as image embedding
-            img_length=n_causal,
-            args=self.args,
-            regress_labels=regress_labels.detach()      # image embedding to regressive
-            # regress_labels=text_embeds
-        )
-
-        return outputs
-
-
-    def lora_forward(self, image_embeds, text_input, text_mask, text_output=None, output_mask=None):
-        """
-        Process:
-        1. image_embeds & text_tokens as input
-        2. prepend [IMG] token to img features or replace <ImagePatches> in <img><ImagePatches></img> with img features
-        3. concat image and text features
-        4. prepend <BOS> to sequence and append <EOS> to end of sequence
-        4. feed into forward and return two losses
-
-        :param image_embeds: [B, n_causal, C], after projected into Language shape
-        :param text_input: [B, seq_len]
-        :param text_mask: [B, seq_len]
-        :return:
-        """
-        B, n_causal, _ = image_embeds.shape
-
-        #  Tokens with indices set to -100 are ignored (masked), the loss is only computed for the tokens with labels in [0, ..., config.vocab_size].
-        
-        # mask [PAD]
-        targets = text_input.masked_fill(
-            text_input == self.tokenizer.pad_token_id, -100
-        )
-        # mask <image>
-        targets = targets.masked_fill(
-            targets == self.image_token_id, -100
-        )
-        # mask [IMG]
-        targets = targets.masked_fill(
-            targets == self.img_token_id, -100
-        )
-        # mask [/IMG]
-        targets = targets.masked_fill(
-            targets == self.img_end_token_id, -100
-        )
-
-        text_embeds = self.lm.base_model.model.model.embed_tokens(text_input)  # [B, seq_len, C]
-
-        all_image_indices = (text_input == self.image_token_id).to(image_embeds.device)
-
-        assert (text_input[all_image_indices].shape[0] == image_embeds.shape[0] * image_embeds.shape[1]), \
-            f"{text_input[text_input == self.image_token_id].shape[0]} != {image_embeds.shape[0]}*{image_embeds.shape[1]}"
-        assert (image_embeds.shape[-1] == text_embeds.shape[-1]), f"{image_embeds.shape[-1]} != {text_embeds.shape[-1]}"
-
-        image_embeds = image_embeds.reshape(-1, image_embeds.shape[-1])
-
-        text_embeds[all_image_indices] = image_embeds
-
-        regress_label_mask = ((text_input == self.image_token_id) + (text_input == self.img_end_token_id)).to(
-            image_embeds.device)
-
-        regress_labels = text_embeds[regress_label_mask]
-        regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
-
-        outputs = self.lm.base_model.model(
             inputs_embeds=text_embeds,
             attention_mask=text_mask,
             return_dict=True,
