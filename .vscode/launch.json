@@ -20,7 +20,10 @@
                 "--lora_finetune",
                 "--data_path", "/mnt/nfs/share/CLIPORT/emu_data_subtask/",
                 "--batch_size", "2",
-                "--gckpt"
+                "--gckpt",
+                "--log_dir","results/train/debug",
+                "--load_ckpt",
+                "--epoch","100"
             ]
 
         }

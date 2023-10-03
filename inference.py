@@ -76,6 +76,11 @@ def parse_args():
         help="Load Emu-I",
     )
     parser.add_argument(
+        "--clip_norm",
+        action='store_true',
+        default=False,
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=10,
@@ -84,6 +89,11 @@ def parse_args():
         "--batch_size",
         type=int,
         default=1,
+    )
+    parser.add_argument(
+        "--lr_base",
+        type=float,
+        default=1e-4,
     )
     
     parser.add_argument(
@@ -257,14 +267,14 @@ def finetune_example(emu_model, args):
     
     # 将模型的参数分成几个组 每个组不同的学习率
     param_groups = [
-        {'params': emu_model.visual.parameters(), 'lr': 4e-3},
-        {'params': emu_model.decoder.parameters(), 'lr': 3e-3},
-        {'params': emu_model.cformer.parameters(), 'lr': 1e-3}
+        {'params': emu_model.visual.parameters(), 'lr': 4 * args.lr_base},
+        {'params': emu_model.decoder.parameters(), 'lr': 3 *  args.lr_base},
+        {'params': emu_model.cformer.parameters(), 'lr': 1 *  args.lr_base}
     ]
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
     # nan但是optimizer step后出现nan
-    optimizer = optim.AdamW(param_groups, lr = 1e-3, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
+    optimizer = optim.AdamW(param_groups, lr = args.lr_base, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -305,7 +315,7 @@ def finetune_example(emu_model, args):
                                             add_special_tokens=True,
                                             ).to(torch.cuda.current_device())
             
-            loss_cls, loss_reg = emu_model(batch_images,
+            loss_cls, loss_reg, loss_reg_len = emu_model(batch_images,
                             batch_input_tokens.input_ids,
                             batch_input_tokens.attention_mask).llm_loss
             
@@ -319,13 +329,13 @@ def finetune_example(emu_model, args):
             
             optimizer.zero_grad()
             # with torch.autograd.detect_anomaly():
-            loss_reg.backward()
+            loss.backward()
 
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.visual.parameters(), max_norm=10, norm_type=2)
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.cformer.parameters(), max_norm=10, norm_type=2)
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.decoder.parameters(), max_norm=10, norm_type=2)
-            
-            # torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=10, norm_type=2)
+            if args.clip_norm:
+                torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=10, norm_type=2)
             
             # max_n,max_grad,max_data = 'none', 0, 0
             # for n,p in emu_model.named_parameters():
@@ -377,10 +387,10 @@ def finetune_example(emu_model, args):
             #         if torch.isnan(p).any():
             #             print(f"epoch={epoch},param_name={n}, grad={p.grad}")
 
-            ddp_loss_cls[0] += loss_cls.item()
-            ddp_loss_cls[1] += args.batch_size
-            ddp_loss_reg[0] += loss_reg.item()
-            ddp_loss_reg[1] += args.batch_size
+            # ddp_loss_cls[0] += loss_cls.item()
+            # ddp_loss_cls[1] += args.batch_size
+            # ddp_loss_reg[0] += loss_reg.item()
+            # ddp_loss_reg[1] += args.batch_size
             # if rank == 0  :
             #     logger.info(f"[epoch:{epoch} rank:{torch.cuda.current_device()} batch:{args.batch_size}] || cls : {loss_cls.item()} || reg : {loss_reg.item()}")
             # torch.cuda.barrier()
@@ -389,12 +399,13 @@ def finetune_example(emu_model, args):
             #     print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
 
             if bi % 10 == 0:
-                dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
-                dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
+                # dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)
+                # dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
                 if rank == 0  :
-                    writer.add_scalar("train_loss_reg_ddp", ddp_loss_reg[0], global_step=global_step)
-                    writer.add_scalar("train_loss_cls_ddp", ddp_loss_cls[0], global_step=global_step)
-                    logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
+                    writer.add_scalar("train_loss_reg_per_img_rank0", loss_reg/loss_reg_len, global_step=global_step)
+                    writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
+                    writer.add_scalar("train_loss_cls_rank0", loss_cls, global_step=global_step)
+                    logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REGP Loss: {:.6f} Len: {}'.format(epoch, bi, loss_cls, loss_reg/loss_reg_len, loss_reg_len))
             
             if bi % 50 == 0:
                 val_ddp_loss_cls = torch.zeros(2).to(rank)
@@ -424,24 +435,24 @@ def finetune_example(emu_model, args):
                                                         return_tensors="pt",
                                                         add_special_tokens=True,
                                                         ).to(torch.cuda.current_device())
-                        val_loss_cls, val_loss_reg = emu_model(batch_images,
+                        val_loss_cls, val_loss_reg, val_loss_reg_len = emu_model(batch_images,
                                         batch_input_tokens.input_ids,
                                         batch_input_tokens.attention_mask).llm_loss
                         val_ddp_loss_cls[0] += val_loss_cls.item()
                         val_ddp_loss_cls[1] += 1
                         val_ddp_loss_reg[0] += val_loss_reg.item()
-                        val_ddp_loss_reg[1] += 1
+                        val_ddp_loss_reg[1] += val_loss_reg_len
                     dist.all_reduce(val_ddp_loss_cls, op=dist.ReduceOp.SUM)   
                     dist.all_reduce(val_ddp_loss_reg, op=dist.ReduceOp.SUM)
                     if rank == 0  :
                         writer.add_scalar("test_loss_reg_ddp", val_ddp_loss_reg[0], global_step=global_step)
                         writer.add_scalar("test_loss_cls_ddp", val_ddp_loss_cls[0], global_step=global_step)
                         logger.info('Test Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, val_ddp_loss_cls[0] / val_ddp_loss_cls[1], val_ddp_loss_reg[0] / val_ddp_loss_reg[1]))
-            
-        dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)   
-        dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)   
-        if rank == 0:
-            logger.info('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
+        #
+        # dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)
+        # dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
+        # if rank == 0:
+        #     logger.info('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
 
         # 在每个周期结束后，更新学习率
         scheduler.step()

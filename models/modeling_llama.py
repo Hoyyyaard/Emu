@@ -135,7 +135,7 @@ class LlamaForReg(transformers.LlamaForCausalLM):
         # print("loss", loss)
         
         return RegressCausalLMOutputWithPast(
-            llm_loss=(loss_cls, loss_reg),
+            llm_loss=(loss_cls, loss_reg, len(loss_reg_list)),
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
