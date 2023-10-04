@@ -1,2 +1,2 @@
-# export CUDA_VISIBLE_DEVICES=5,6,7
-python inference.py --lora_finetune --train --gckpt --clip_norm --batch_size 4 --lr_base 0.005 --epoch 100 --log_dir lrb{0.005}-epo{100}-bs{4}-norm{w}-ckpt{w} --batch_size 4
+export CUDA_VISIBLE_DEVICES=0,1,2,3,5,6,7
+python inference.py --lora_finetune --train --gckpt --clip_norm --batch_size 1 --lr_base 0.0005 --epoch 100 --log_dir results/train_new/lrb{0.0005}-epo{100}-bs{1}-norm{w}-ckpt{w}-loss{wocls} --batch_size 1 --data_path /mnt/nfs/share/CLIPORT/emu_data_subtask/

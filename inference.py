@@ -322,8 +322,8 @@ def finetune_example(emu_model, args):
             if (rank == 0):
                 writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
                 writer.add_scalar("train_loss_cls_rank0", loss_cls, global_step=global_step)
-            # REG的loss会比较小
-            loss = ( loss_cls + loss_reg / loss_reg_len) * args.batch_size 
+
+            loss =  loss_cls + loss_reg
             # if torch.cuda.current_device() == 0:
             #     print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
