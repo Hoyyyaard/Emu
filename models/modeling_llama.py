@@ -207,7 +207,7 @@ class LLaMAForClsAndRegression(nn.Module):
     def get_num_layers(self):
         return len(self.lm.model.layers)
 
-    def forward(self, image_embeds, text_input, text_mask, text_output=None, output_mask=None):
+    def forward(self, image_embeds, text_input, text_mask, lora, text_output=None, output_mask=None):
         """
         Process:
         1. image_embeds & text_tokens as input
@@ -245,7 +245,10 @@ class LLaMAForClsAndRegression(nn.Module):
         TB, max_seq_len = text_input.shape
         text_input = torch.flatten(text_input, start_dim=0, end_dim=1)
 
-        text_embeds = self.lm.base_model.model.model.embed_tokens(text_input)  # [B, seq_len, C]
+        if lora:
+            text_embeds = self.lm.base_model.model.model.embed_tokens(text_input)  # [B, seq_len, C]
+        else:
+            text_embeds = self.lm.model.embed_tokens(text_input)  # [B, seq_len, C]
 
         all_image_indices = (text_input == self.image_token_id).to(image_embeds.device)
 

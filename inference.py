@@ -97,7 +97,7 @@ def parse_args():
     )
     
     parser.add_argument(
-        "--lora_finetune",
+        "--lora",
         action='store_true',
         default=False,
     )
@@ -151,7 +151,7 @@ def prepare_model(model_name, args):
     logger.info(f"=====> model_cfg: {model_cfg}")
 
     
-    model = Emu(**model_cfg, args=args) if args.instruct or args.lora_finetune else Emu_pretrain(**model_cfg, args=args)
+    model = Emu(**model_cfg, args=args) if args.instruct or args.lora else Emu_pretrain(**model_cfg, args=args)
 
     if args.train:
         model.train()
@@ -177,7 +177,7 @@ def prepare_model(model_name, args):
         # model.eval()
         logger.info(f"=====> get model.load_state_dict msg: {msg}")
     
-    if args.lora_finetune and args.train:
+    if args.lora and args.train:
         print('Patching LoRA...')
         from peft import LoraConfig, get_peft_model
         lora_config = LoraConfig(
@@ -193,6 +193,7 @@ def prepare_model(model_name, args):
 
         model.decoder.lm.base_model.model.lm_head.train()
         model.decoder.lm.base_model.model.stu_regress_head.train()
+ 
 
     return model
 
@@ -315,9 +316,10 @@ def finetune_example(emu_model, args):
                                             add_special_tokens=True,
                                             ).to(torch.cuda.current_device())
             
+
             loss_cls, loss_reg, loss_reg_len = emu_model(batch_images,
-                            batch_input_tokens.input_ids,
-                            batch_input_tokens.attention_mask).llm_loss
+                            batch_input_tokens.input_ids, 
+                            batch_input_tokens.attention_mask, args.lora).llm_loss
             
             if (rank == 0):
                 writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
@@ -437,7 +439,7 @@ def finetune_example(emu_model, args):
                                                         ).to(torch.cuda.current_device())
                         val_loss_cls, val_loss_reg, val_loss_reg_len = emu_model(batch_images,
                                         batch_input_tokens.input_ids,
-                                        batch_input_tokens.attention_mask).llm_loss
+                                        batch_input_tokens.attention_mask, lora=args.lora).llm_loss
                         val_ddp_loss_cls[0] += val_loss_cls.item()
                         val_ddp_loss_cls[1] += 1
                         val_ddp_loss_reg[0] += val_loss_reg.item()
@@ -448,6 +450,7 @@ def finetune_example(emu_model, args):
                         writer.add_scalar("test_loss_reg_ddp", val_ddp_loss_reg[0], global_step=global_step)
                         writer.add_scalar("test_loss_cls_ddp", val_ddp_loss_cls[0], global_step=global_step)
                         logger.info('Test Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, bi, val_ddp_loss_cls[0] / val_ddp_loss_cls[1], val_ddp_loss_reg[0] / val_ddp_loss_reg[1]))
+            torch.cuda.empty_cache()
         #
         # dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)
         # dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
