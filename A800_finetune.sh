@@ -1,0 +1,2 @@
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+python inference.py  --train  --load_ckpt  --batch_size 8 --lr_base 0.00001 --epoch 100 --log_dir results/finetune_exp/lrb{0.00001}-epo{100}-bs{8}-norm{w0}-ckpt{w}-loss{avg_reg}}-lora{w}-lrd{w}   --lora --data_path ../emu_data_subtask/ --mlt_emu --avg_reg 

@@ -44,6 +44,13 @@ def parse_args():
         help="Load Emu-I",
     )
     parser.add_argument(
+        
+        "--avg_reg",
+        action='store_true',
+        default=False,
+    
+    )
+    parser.add_argument(
         "--ckpt_path",
         type=str,
         default='ckpts/multimodal_encoder/pytorch_model.bin',
@@ -325,7 +332,10 @@ def finetune_example(emu_model, args):
                 writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
                 writer.add_scalar("train_loss_cls_rank0", loss_cls, global_step=global_step)
 
-            loss =  loss_cls + loss_reg
+            if args.avg_reg:
+                loss =  loss_cls + loss_reg / loss_reg_len
+            else:
+                loss = loss_cls + loss_reg
             # if torch.cuda.current_device() == 0:
             #     print(f'Batch 1 infernece takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
@@ -458,7 +468,7 @@ def finetune_example(emu_model, args):
         #     logger.info('Train Epoch: {} \t CLS Loss: {:.6f} \t REG Loss: {:.6f}'.format(epoch, ddp_loss_cls[0] / ddp_loss_cls[1], ddp_loss_reg[0] / ddp_loss_reg[1]))
 
         # 在每个周期结束后，更新学习率
-        # scheduler.step()
+        scheduler.step()
         
     # image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
     # text = 'There are two dogs.[IMG]'
@@ -540,7 +550,7 @@ def instruct_example(emu_model):
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12589'
+    os.environ['MASTER_PORT'] = '12569'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)

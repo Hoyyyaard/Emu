@@ -99,8 +99,25 @@ class Emu(nn.Module):
         self.image_placeholder = "[IMG]" + "<image>" * self.n_causal + "[/IMG]"
         
 
-    def wrap_fsdp(self, wrapper_kwargs):
+    def wrap_fsdp(self):
+        
+        import functools
+        my_auto_wrap_policy = functools.partial(
+            size_based_auto_wrap_policy, min_num_params=1000
+        )
+        
 
+        
+        wrapper_kwargs = dict(
+            process_group=None,
+            cpu_offload=CPUOffload(offload_params=False),
+            device_id=torch.cuda.current_device(),
+            auto_wrap_policy=my_auto_wrap_policy,
+            limit_all_gathers=True
+            # use_orig_params=True
+        )
+        
+        
         for block in self.decoder.modules():
             block.requires_grad_(False)
         with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
@@ -180,7 +197,7 @@ class Emu(nn.Module):
         self.cformer.set_grad_checkpointing()
         self.decoder.set_grad_checkpointing()
 
-    def forward(self, image, text_input, input_mask, text_output=None, output_mask=None, image_latent=None,
+    def forward(self, image, text_input, input_mask, lora, text_output=None, output_mask=None, image_latent=None,
                 image_features=None):
         # [B, C, H, W] --> [B, n_patch, C_vis]
         if image_latent is None or image_features is None:
@@ -191,7 +208,7 @@ class Emu(nn.Module):
         image_features = self.cformer(image_features)
         # loss from hf lm model
         loss = self.decoder(image_features, text_input=text_input, text_output=text_output, text_mask=input_mask,
-                            output_mask=output_mask)
+                            output_mask=output_mask, lora=lora)
         return loss
 
     @torch.no_grad()
