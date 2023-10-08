@@ -94,7 +94,7 @@ class VLadapterCfg:
 def get_cast_dtype(precision: str):
     cast_dtype = None
     if 'bf16' in precision:
-        cast_dtype = torch.float16
+        cast_dtype = torch.bfloat16
     elif 'fp16' in precision:
         cast_dtype = torch.float16
     return cast_dtype
@@ -110,7 +110,7 @@ def _build_vision_tower(
 
     if vision_cfg.eva_model_name:
         vision_heads = vision_cfg.width // vision_cfg.head_width
-        norm_layer = LayerNormFp32 if cast_dtype in (torch.float16, torch.float16) else LayerNorm
+        norm_layer = LayerNormFp32 if cast_dtype in (torch.bfloat16, torch.float16) else LayerNorm
         visual = EVAVisionTransformer(
             img_size=vision_cfg.image_size,
             patch_size=vision_cfg.patch_size,

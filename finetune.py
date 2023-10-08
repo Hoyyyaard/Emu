@@ -81,7 +81,7 @@ class MyTrainer(T_Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         prompt = inputs[0][0]
         # print(batch)
-        images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.float16) for fp in inputs[1]], dim=0)
+        images = torch.cat([process_img(img_path=fp[0], device=torch.cuda.current_device()).to(torch.) for fp in inputs[1]], dim=0)
         
         input_tokens = emu_model.decoder.tokenizer(
                                         prompt, 

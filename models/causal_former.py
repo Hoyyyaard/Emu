@@ -30,8 +30,9 @@ class CausalFormer(nn.Module):
 
         self.cformer = lm.decoder
 
-        # for name, param in self.cformer.named_parameters():
-        #     param.data = param.data.to(torch.float16)
+        if args.bf16:
+            for name, param in self.cformer.named_parameters():
+                param.data = param.data.bfloat16()
 
         self.causal_tokens = nn.Parameter(
             torch.zeros(1, n_causal, model_config.d_model)

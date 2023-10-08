@@ -126,6 +126,12 @@ def parse_args():
         default=False,
     )
     
+    parser.add_argument(
+        "--bf16",
+        action='store_true',
+        default=False,
+    )
+    
     args = parser.parse_args()
 
     return args
@@ -246,7 +252,8 @@ def Emu_instruct_caption(img, emu_model):
     print(f"===> caption output: {output_text}\n")
 
 def finetune_example(emu_model, args):
-
+    itype = torch.bfloat16 if args.bf16 else torch.float16
+    
     rank = torch.cuda.current_device()
     
     from src.pretrain_dataset import Pretrain_Dataset
@@ -311,7 +318,7 @@ def finetune_example(emu_model, args):
                 batch_fps.extend(tmp_list)
             
             batch_images = torch.cat([process_img(img_path=fp, 
-                                            device=torch.cuda.current_device()).to(torch.float16) 
+                                            device=torch.cuda.current_device()).to(itype) 
                                             for fp in batch_fps 
                                             ],
                                dim=0)
@@ -329,8 +336,8 @@ def finetune_example(emu_model, args):
                             batch_input_tokens.attention_mask, args.lora).llm_loss
             
             if (rank == 0):
-                writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
-                writer.add_scalar("train_loss_cls_rank0", loss_cls, global_step=global_step)
+                writer.add_scalar("train_loss_reg_rank0", loss_reg.item(), global_step=global_step)
+                writer.add_scalar("train_loss_cls_rank0", loss_cls.item(), global_step=global_step)
 
             if args.avg_reg:
                 loss =  loss_cls + loss_reg / loss_reg_len
@@ -414,10 +421,10 @@ def finetune_example(emu_model, args):
                 # dist.all_reduce(ddp_loss_cls, op=dist.ReduceOp.SUM)
                 # dist.all_reduce(ddp_loss_reg, op=dist.ReduceOp.SUM)
                 if rank == 0  :
-                    writer.add_scalar("train_loss_reg_per_img_rank0", loss_reg/loss_reg_len, global_step=global_step)
-                    writer.add_scalar("train_loss_reg_rank0", loss_reg, global_step=global_step)
-                    writer.add_scalar("train_loss_cls_rank0", loss_cls, global_step=global_step)
-                    logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REGP Loss: {:.6f} Len: {}'.format(epoch, bi, loss_cls, loss_reg/loss_reg_len, loss_reg_len))
+                    writer.add_scalar("train_loss_reg_per_img_rank0", (loss_reg/loss_reg_len).item(), global_step=global_step)
+                    writer.add_scalar("train_loss_reg_rank0", loss_reg.item(), global_step=global_step)
+                    writer.add_scalar("train_loss_cls_rank0", loss_cls.item(), global_step=global_step)
+                    logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REGP Loss: {:.6f} Len: {} Lr: {}'.format(epoch, bi, loss_cls, loss_reg/loss_reg_len, loss_reg_len, optimizer.state_dict()['param_groups'][0]['lr']))
             
             if bi % 50 == 0:
                 val_ddp_loss_cls = torch.zeros(2).to(rank)
@@ -436,7 +443,7 @@ def finetune_example(emu_model, args):
                             batch_fps.extend(tmp_list)
                         
                         batch_images = torch.cat([process_img(img_path=fp, 
-                                                        device=torch.cuda.current_device()).to(torch.float16) 
+                                                        device=torch.cuda.current_device()).to(itype) 
                                                         for fp in batch_fps 
                                                         ],
                                         dim=0)
@@ -563,8 +570,9 @@ def fsdp_main(rank, world_size, model, args):
     setup(rank, world_size)
     torch.cuda.set_device(rank)
 
+    mtype = torch.bfloat16 if args.bf16 else torch.float16
     if args.mlt_emu and model is None:
-        model = prepare_model('Emu-14B', args).to(torch.float16)
+        model = prepare_model('Emu-14B', args).to(mtype)
     # model.to(torch.cuda.current_device())
     # model = DDP(model)
     model.wrap_fsdp()
@@ -610,7 +618,8 @@ if __name__ == '__main__':
     
     emu_model = None
     if not args.mlt_emu:
-        emu_model = prepare_model('Emu-14B', args).to(torch.float16)
+        mtype = torch.bfloat16 if args.bfloat16 else torch.float16
+        emu_model = prepare_model('Emu-14B', args).to(mtype)
     
     mp.spawn(fsdp_main,
         args=(WORLD_SIZE, emu_model, args),

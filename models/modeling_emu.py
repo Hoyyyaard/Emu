@@ -255,13 +255,14 @@ class Emu(nn.Module):
         GENERATION_CONFIG.eos_token_id = self.decoder.tokenizer.eos_token_id
         
         image = samples["image"]
+        itype = torch.bfloat16 if self.args.bf16 else torch.float16
         if image is not None:
             # image = image.to(dtype=torch.float16)
-            image = image.to(torch.cuda.current_device()).to(dtype=torch.float16)
-            image_features = self.ln_visual(self.visual.forward_features(image)).to(dtype=torch.float16)
+            image = image.to(torch.cuda.current_device()).to(dtype=itype)
+            image_features = self.ln_visual(self.visual.forward_features(image)).to(dtype=itype)
             # image_features = image_features.cpu()
             # image_features = self.cformer(image_features).squeeze().to(dtype=torch.bfloat16)
-            image_features = self.cformer(image_features).squeeze().to(dtype=torch.float16)
+            image_features = self.cformer(image_features).squeeze().to(dtype=itype)
 
         prompt = samples["prompt"] if "prompt" in samples.keys() else self.prompt
 
@@ -285,7 +286,7 @@ class Emu(nn.Module):
         img_token_idx_list = input_ids.eq(img_token_id).squeeze() 
 
         # with torch.amp.autocast(device_type=self.args.device.type, dtype=torch.bfloat16):
-        with torch.amp.autocast(device_type=self.args.device.type, dtype=torch.float16):
+        with torch.amp.autocast(device_type=self.args.device.type, dtype=itype):
             if self.args.instruct:
                 inputs_embeds = self.decoder.lm.model.model.embed_tokens(input_ids)
             else:

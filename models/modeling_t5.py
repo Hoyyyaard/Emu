@@ -87,8 +87,9 @@ class Flan_T5(nn.Module):
             t5_model, config=self.config
         )
 
+        ptype = torch.bfloat16 if args.bf16 else torch.float16
         for name, param in self.lm.named_parameters():
-            param.data = param.data.to(torch.float16)
+            param.data = param.data.to(ptype)
 
     def forward(self, image_embeds, text_input, text_output, input_mask, output_mask):
         """
@@ -325,7 +326,7 @@ class T5LayerNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
 
         # convert into half-precision if necessary
-        if self.weight.dtype in [torch.float16, torch.float16]:
+        if self.weight.dtype in [torch.float16, torch.bfloat16]:
             hidden_states = hidden_states.to(self.weight.dtype)
 
         return self.weight * hidden_states
