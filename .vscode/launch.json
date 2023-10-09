@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "1",
+            "name": "pretrain",
             "type": "python",
             "request": "launch",
             "cwd": "/mnt/gluster/home/zhihongyan/Project/llm4robotic/Emu",
@@ -25,6 +25,29 @@
                 "--load_ckpt",
                 "--epoch","100",
                 "--lr_base","0.0001"
+            ]
+
+        },
+        {
+            "name": "visual decoding",
+            "type": "python",
+            "request": "launch",
+            "cwd": "/root/Projects/Emu",
+            // "program": "/mnt/cephfs/home/zhihongyan/anaconda3/envs/zsvlnhl/lib/python3.8/site-packages/torch/distributed/launch.py",
+            "program": "image_inference.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/root/Projects/miniconda3/envs/emu/bin/python",
+            "env": {"CUDA_VISIBLE_DEVICES":"0,1"},
+            "args":[
+                "--train",
+                "--lora",
+                "--data_path", "/mnt/nfs/share/CLIPORT/emu_data_subtask/",
+                "--batch_size", "2",
+                "--log_dir","results/visual_decoding/debug",
+                "--epoch","100",
+                "--lr_base","0.0001",
+                "--mlt_emu"
             ]
 
         }

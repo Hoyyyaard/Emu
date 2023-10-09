@@ -51,6 +51,13 @@ def parse_args():
     
     )
     parser.add_argument(
+        
+        "--just_end",
+        action='store_true',
+        default=False,
+    
+    )
+    parser.add_argument(
         "--ckpt_path",
         type=str,
         default='ckpts/multimodal_encoder/pytorch_model.bin',
@@ -59,7 +66,7 @@ def parse_args():
     parser.add_argument(
         "--data_path",
         type=str,
-        default='test_data/',
+        default='val_data/',
 
     )
     parser.add_argument(
@@ -257,8 +264,8 @@ def finetune_example(emu_model, args):
     rank = torch.cuda.current_device()
     
     from src.pretrain_dataset import Pretrain_Dataset
-    dataset = Pretrain_Dataset(_dataset_path=args.data_path)
-    val_dataset = Pretrain_Dataset(_dataset_path=args.val_data_path)
+    dataset = Pretrain_Dataset(_dataset_path=args.data_path, just_end=args.just_end)
+    val_dataset = Pretrain_Dataset(_dataset_path=args.val_data_path, just_end=args.just_end)
     
     if torch.cuda.current_device() == 0:
         logger.info(f"Dataset Len : {len(dataset)} || World Size : {torch.cuda.device_count()}")
@@ -477,6 +484,14 @@ def finetune_example(emu_model, args):
         # 在每个周期结束后，更新学习率
         scheduler.step()
         
+        if epoch % 20 == 0 and epoch > 0:
+            # use a barrier to make sure training is done on all ranks
+            dist.barrier()
+            # state_dict for FSDP model is only available on Nightlies for now
+            states = emu_model.state_dict()
+            if rank == 0:
+                os.mkdir(args.log_dir+"/ckpt")
+                torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_cls{loss_cls:.2f}_reg{(loss_reg/loss_reg_len):.2f}.bin")
     # image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
     # text = 'There are two dogs.[IMG]'
     # for _ in range(32):
@@ -557,7 +572,7 @@ def instruct_example(emu_model):
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12569'
+    os.environ['MASTER_PORT'] = '12561'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)

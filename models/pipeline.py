@@ -14,7 +14,8 @@ from diffusers import AutoencoderKL, PNDMScheduler, UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from transformers import CLIPImageProcessor
 
-from .modeling_emu_pretrain import Emu
+from .modeling_emu_pretrain import Emu as Emu_pretrain
+from .modeling_emu import Emu
 
 
 class EmuGenerationPipeline(nn.Module):
@@ -222,14 +223,31 @@ class EmuGenerationPipeline(nn.Module):
         cls,
         model_name: str,
         model_path: str,
+        args,
         **kwargs,
     ) -> nn.Module:
         with open(f'models/{model_name}.json', "r", encoding="utf8") as f:
             model_cfg = json.load(f)
 
-        model = Emu(**model_cfg, cast_dtype=torch.float, **kwargs)
+        # model = Emu(**model_cfg, cast_dtype=torch.float, **kwargs)
+        model = Emu(**model_cfg, args=args) if args.instruct or args.lora else Emu_pretrain(**model_cfg, args=args)
+        
         ckpt = torch.load(model_path, map_location="cpu")
-        if "module" in ckpt:
+        if args.lora:
+            print('Patching LoRA...')
+            from peft import LoraConfig, get_peft_model
+            lora_config = LoraConfig(
+                r=16,
+                lora_alpha=16,
+                target_modules=['q_proj', 'k_proj', 'v_proj', 'o_proj'],
+                lora_dropout=0.05,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            model.decoder.lm = get_peft_model(model.decoder.lm, lora_config)
+            msg = model.load_state_dict(ckpt, strict=False)
+            print(msg)
+        elif "module" in ckpt:
             # model.load_state_dict(ckpt["module"], strict=True)
             model.load_state_dict(ckpt["module"], strict=False)
         else:
@@ -268,7 +286,7 @@ class EmuGenerationPipeline(nn.Module):
         )
 
     def wrap_fsdp(self, wrapper_kwargs):
-        self.emu_encoder.wrap_fsdp(wrapper_kwargs)
+        self.emu_encoder.wrap_fsdp()
         self.vae = self.vae.to(torch.cuda.current_device())
         self.unet = self.unet.to(torch.cuda.current_device())
         self.safety_checker = self.safety_checker.to(torch.cuda.current_device())
