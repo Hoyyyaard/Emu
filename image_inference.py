@@ -316,7 +316,7 @@ def visual_decoding_example(pipeline, args):
             total_train_param += p.numel()
     print("trainable params: ", total_train_param)
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(args.epochs):
         
         train_sampler.set_epoch(epoch)
         
@@ -370,14 +370,14 @@ def visual_decoding_example(pipeline, args):
             scheduler.step()
             torch.cuda.empty_cache()
 
-            if epoch % 10 == 0 and epoch > 0:
-                # use a barrier to make sure training is done on all ranks
-                dist.barrier()
-                # state_dict for FSDP model is only available on Nightlies for now
-                states = pipeline.state_dict()
-                if rank == 0:
-                    os.mkdir(args.log_dir+"/ckpt")
-                    torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_cls{loss:.2f}")
+        if epoch % 10 == 0:
+            # use a barrier to make sure training is done on all ranks
+            dist.barrier()
+            # state_dict for FSDP model is only available on Nightlies for now
+            states = pipeline.state_dict()
+            if rank == 0:
+                os.mkdir(args.log_dir+"/ckpt")
+                torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_cls{loss:.2f}")
 
 if __name__ == "__main__":
     args = parse_args()
