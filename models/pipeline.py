@@ -64,7 +64,15 @@ class EmuGenerationPipeline(nn.Module):
             TF.ToTensor(),
             TF.Normalize(mean=eva_mean, std=eva_std),
         ])
+        
+        self.gt_transform = TF.Compose([
+            TF.Resize((512, 512), interpolation=TF.InterpolationMode.BICUBIC),
+            TF.ToTensor(),
+            TF.Normalize(mean=eva_mean, std=eva_std),
+        ])
 
+        self.args = kwargs['args']
+        
     @torch.no_grad()
     def forward(
         self,
@@ -108,7 +116,8 @@ class EmuGenerationPipeline(nn.Module):
         latents = torch.randn(shape, device=device, dtype=dtype)
 
         # 4. Denoising loop
-        for t in tqdm(timesteps):
+        # for t in tqdm(timesteps):
+        for t in timesteps:
             # expand the latents if we are doing classifier free guidance
             # 2B x 4 x H x W
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
@@ -130,18 +139,21 @@ class EmuGenerationPipeline(nn.Module):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
         # 8. Post-processing
-        image = self.decode_latents(latents)
+        image, raw_image = self.decode_latents(latents)
+        
+        has_nsfw_concept = None
+        if not self.args.train:
+            # 9. Run safety checker
+            image, has_nsfw_concept = self.run_safety_checker(
+                image,
+                device,
+                dtype
+            )
 
-        # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(
-            image,
-            device,
-            dtype
-        )
-
-        # 10. Convert to PIL
-        image = self.numpy_to_pil(image)
-        return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept
+            # 10. Convert to PIL
+            image = self.numpy_to_pil(image)
+            
+        return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
     def _prepare_and_encode_inputs(
         self,
@@ -183,10 +195,10 @@ class EmuGenerationPipeline(nn.Module):
     def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents).sample
-        image = (image / 2 + 0.5).clamp(0, 1)
+        raw_image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
-        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-        return image
+        image = raw_image.cpu().permute(0, 2, 3, 1).float().numpy()
+        return image, raw_image
 
     def numpy_to_pil(self, images: np.ndarray) -> List[Image.Image]:
         """

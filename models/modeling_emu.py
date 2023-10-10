@@ -323,7 +323,7 @@ class Emu(nn.Module):
 
         return output_text
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def generate_image(
         self,
         text: List[str],
@@ -353,7 +353,11 @@ class Emu(nn.Module):
             attention_mask = inputs.attention_mask.to(device)
             input_ids = inputs.input_ids.to(device)
 
-            text_embeds = self.decoder.lm.model.embed_tokens(input_ids)
+            
+            if self.args.lora:
+                text_embeds = self.decoder.lm.model.model.embed_tokens(input_ids)
+            else:
+                text_embeds = self.decoder.lm.model.embed_tokens(input_ids)
 
             image_idx = (input_ids == IMAGE)
             cumsum_idx = torch.flip(torch.cumsum(torch.flip(image_idx, dims=[1]), dim=1), dims=[1])

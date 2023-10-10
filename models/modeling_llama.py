@@ -104,7 +104,9 @@ class LlamaForReg(transformers.LlamaForCausalLM):
         logits = self.lm_head(hidden_states)  # scores for each vocabulary token before SoftMax
 
         loss = None   # Language modeling loss (for next-token prediction).
-        
+        loss_cls = None
+        loss_reg = None
+        loss_reg_list = []
         #  Tokens with indices set to -100 are ignored (masked), the loss is only computed for the tokens with labels in [0, ..., config.vocab_size].
         if labels is not None:
             # Shift so that tokens < n predict n

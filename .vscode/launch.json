@@ -38,15 +38,15 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "python": "/root/Projects/miniconda3/envs/emu/bin/python",
-            "env": {"CUDA_VISIBLE_DEVICES":"0,1"},
+            "env": {"CUDA_VISIBLE_DEVICES":"0,1,2,3,4,5"},
             "args":[
                 "--train",
                 "--lora",
-                "--data_path", "/mnt/nfs/share/CLIPORT/emu_data_subtask/",
-                "--batch_size", "2",
+                "--batch_size", "4",
                 "--log_dir","results/visual_decoding/debug",
                 "--epoch","100",
-                "--lr_base","0.0001",
+                "--data_path","../emu_data_subtask/",
+                "--lr_base","0.0005",
                 "--mlt_emu"
             ]
 

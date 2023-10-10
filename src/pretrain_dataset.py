@@ -4,7 +4,7 @@ import os
 import json
 import numpy as np
 import pickle
-
+from PIL import Image
 class Pretrain_Dataset(Dataset):
     
     def __init__(self, n_causal=32, _dataset_path='test_data/', just_end=False):
@@ -94,9 +94,8 @@ class Visual_Decoding_Dataset(Dataset):
                     task_info = json.load(f)
                 sequence = [
                     f'Task: {list(task_info.values())[0]}. Initial State:',
-                    Image.open(f'{p2}/origin_rgb.png').convert("RGB"),
+                    f'{p2}/origin_rgb.png',
                     f'\n Details:\nSubtask_1: {list(task_info.values())[1]}. State: ',
-                     
                 ]
                 gt_image = f'{p2}/subtask1_rgb.png'
             

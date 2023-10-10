@@ -199,8 +199,9 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     # pipeline = pipeline.bfloat16().cuda()
     pipeline = pipeline.to(torch.float16)
     
-    if args.train:
-        pipeline.unet.train()
+    # if args.train:
+    #     pipeline.eval()
+    #     pipeline.unet.train()
     
     pipeline.wrap_fsdp(wrapper_kwargs)
     
@@ -296,11 +297,24 @@ def visual_decoding_example(pipeline, args):
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
     # nan但是optimizer step后出现nan
-    optimizer = optim.AdamW(pipeline.parameters(), lr = args.lr_base, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
+    optimizer = optim.AdamW(pipeline.unet.parameters(), lr = args.lr_base, betas=(0.9,0.999), weight_decay=1e-2, eps=1e-5)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     global_step = 0
+    
+
+    
+    pipeline.eval()
+    pipeline.unet.train()
+    total_train_param = 0
+    for n,p in pipeline.named_parameters():
+        if not 'unet' in n:
+            p.requires_grad_ = False
+        else:
+            p.requires_grad_ = True
+            total_train_param += p.numel()
+    print("trainable params: ", total_train_param)
     
     for epoch in range(1, args.epochs + 1):
         
@@ -313,55 +327,57 @@ def visual_decoding_example(pipeline, args):
         import tqdm
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
 
-            
             global_step += 1
             
-            batch_prompts = list(batch[0])
-            gt_images = batch[1]
-            batch_fps = []
+            batch_squences = []
             batch_gt_images = []
-            for bii in range(len(args.batch_size)):
-                image = Image.open(fps[bii]).convert("RGB")
-                gt_images = (Image.open(gt_images[bii]).convert("RGB"))
+
+            for bii in range(args.batch_size):
+                gt_image = Image.open(batch[1][bii]).convert("RGB")
+                gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.cuda.current_device()).requires_grad_(True).to(torch.float16)
+                squence = [
+                    batch[0][0][bii],
+                    Image.open(batch[0][1][bii]).convert("RGB"),
+                    batch[0][2][bii],
+                ]
             
 
-                image, safety = pipeline(
-                    [
-                        batch_prompts[bii][0],
-                        image,
-                        batch_prompts[bii][1]
-                        
-                    ],
+                image, safety, raw_image = pipeline(
+                    squence,
                     height=512,
                     width=512,
                     guidance_scale=10.,
                 )
-            
-            
-            
-            batch_loss.append(loss_freg(image, gt_images))
+                
+                raw_image = raw_image.to(torch.float16)
+                
+                batch_loss.append(loss_freg(raw_image, gt_image))
         
-        loss = sum(batch_loss)
-        if (rank == 0):
-            writer.add_scalar("train_loss_reg_rank0", loss.item(), global_step=global_step)
+            loss = sum(batch_loss)/len(batch_loss)
             
-        optimizer.zero_grad()
-        # with torch.autograd.detect_anomaly():
-        loss.backward()
+            if (rank == 0):
+                logger.info('Train Epoch: {} Batch: {}\t Loss: {:.6f} \t  Lr: {}'.format(epoch, bi, loss, optimizer.state_dict()['param_groups'][0]['lr']))
+                writer.add_scalar("train_loss_decoding_rank0", loss.item(), global_step=global_step)
+                
+            optimizer.zero_grad()
+            # with torch.autograd.detect_anomaly():
+            loss.backward(retain_graph=True)
 
-        # torch.nn.utils.clip_grad_norm_(parameters=emu_model.visual.parameters(), max_norm=10, norm_type=2)
-        # torch.nn.utils.clip_grad_norm_(parameters=emu_model.cformer.parameters(), max_norm=10, norm_type=2)
-        # torch.nn.utils.clip_grad_norm_(parameters=emu_model.decoder.parameters(), max_norm=10, norm_type=2)
-        if args.clip_norm:
-            torch.nn.utils.clip_grad_norm_(parameters=emu_model.parameters(), max_norm=10, norm_type=2)
-    
+            if args.clip_norm:
+                torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
         
-        # print("##################################################################")
-        optimizer.step()
+            optimizer.step()
+            scheduler.step()
+            torch.cuda.empty_cache()
 
-        torch.cuda.empty_cache()
-        # if torch.cuda.current_device() == 0:
-        #     print(f'Batch 1 takes torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+            if epoch % 10 == 0 and epoch > 0:
+                # use a barrier to make sure training is done on all ranks
+                dist.barrier()
+                # state_dict for FSDP model is only available on Nightlies for now
+                states = pipeline.state_dict()
+                if rank == 0:
+                    os.mkdir(args.log_dir+"/ckpt")
+                    torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_cls{loss:.2f}")
 
 if __name__ == "__main__":
     args = parse_args()
