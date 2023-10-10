@@ -118,7 +118,7 @@ class Emu(nn.Module):
         
         wrapper_kwargs = dict(
             process_group=None,
-            cpu_offload=CPUOffload(offload_params=False),
+            cpu_offload=CPUOffload(offload_params=True),
             device_id=torch.cuda.current_device(),
             auto_wrap_policy=my_auto_wrap_policy,
             limit_all_gathers=True
@@ -323,7 +323,7 @@ class Emu(nn.Module):
 
         return output_text
 
-    # @torch.no_grad()
+    @torch.no_grad()
     def generate_image(
         self,
         text: List[str],

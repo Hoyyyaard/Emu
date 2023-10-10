@@ -39,6 +39,7 @@ class EmuGenerationPipeline(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(
             unet,
         )
+        self.unet.enable_gradient_checkpointing()
         self.vae = AutoencoderKL.from_pretrained(
             vae,
         )
@@ -73,7 +74,7 @@ class EmuGenerationPipeline(nn.Module):
 
         self.args = kwargs['args']
         
-    @torch.no_grad()
+    # @torch.no_grad()
     def forward(
         self,
         inputs: List[Union[Image.Image, str]],
@@ -94,6 +95,7 @@ class EmuGenerationPipeline(nn.Module):
 
         # 1. Encode input prompt
         batch_size = 1
+
         prompt_embeds = self._prepare_and_encode_inputs(
             inputs,
             device,
@@ -155,6 +157,7 @@ class EmuGenerationPipeline(nn.Module):
             
         return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
+    @torch.no_grad()
     def _prepare_and_encode_inputs(
         self,
         inputs: List[Union[str, Image.Image]],
@@ -197,7 +200,8 @@ class EmuGenerationPipeline(nn.Module):
         image = self.vae.decode(latents).sample
         raw_image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
-        image = raw_image.cpu().permute(0, 2, 3, 1).float().numpy()
+        # image = raw_image.cpu().permute(0, 2, 3, 1).float().numpy()
+        image = raw_image.cpu().permute(0, 2, 3, 1).float().detach().numpy()
         return image, raw_image
 
     def numpy_to_pil(self, images: np.ndarray) -> List[Image.Image]:

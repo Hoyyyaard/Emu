@@ -42,11 +42,11 @@
             "args":[
                 "--train",
                 "--lora",
-                "--batch_size", "4",
-                "--log_dir","results/visual_decoding/debug",
+                "--batch_size", "1",
+                "--log_dir","results/visual_decoding_exp/debug",
                 "--epoch","100",
                 "--data_path","../emu_data_subtask/",
-                "--lr_base","0.0005",
+                "--lr_base","0.0001",
                 "--mlt_emu"
             ]
 
