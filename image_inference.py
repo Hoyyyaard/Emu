@@ -323,7 +323,7 @@ def visual_decoding_example(pipeline, args):
         
         loss_freg = torch.nn.MSELoss()
         
-        batch_loss = []
+        
         import tqdm
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
 
@@ -331,7 +331,7 @@ def visual_decoding_example(pipeline, args):
             
             batch_squences = []
             batch_gt_images = []
-
+            batch_loss = []
             for bii in range(args.batch_size):
                 gt_image = Image.open(batch[1][bii]).convert("RGB")
                 gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.cuda.current_device()).requires_grad_(True).to(torch.float16)
@@ -346,6 +346,7 @@ def visual_decoding_example(pipeline, args):
                     squence,
                     height=512,
                     width=512,
+                    num_inference_steps=50,
                     guidance_scale=10.,
                 )
                 
@@ -359,16 +360,20 @@ def visual_decoding_example(pipeline, args):
                 logger.info('Train Epoch: {} Batch: {}\t Loss: {:.6f} \t  Lr: {}'.format(epoch, bi, loss, optimizer.state_dict()['param_groups'][0]['lr']))
                 writer.add_scalar("train_loss_decoding_rank0", loss.item(), global_step=global_step)
                 
-            optimizer.zero_grad()
+            
             # with torch.autograd.detect_anomaly():
-            loss.backward(retain_graph=True)
+            # loss.backward(retain_graph=True)
+            loss.backward()
 
-            if args.clip_norm:
-                torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
+            # if args.clip_norm:
+            #     torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
         
             optimizer.step()
             scheduler.step()
+            
             torch.cuda.empty_cache()
+            optimizer.zero_grad()
+            pipeline.zero_grad()
 
         if epoch % 10 == 0:
             # use a barrier to make sure training is done on all ranks
