@@ -73,7 +73,92 @@ class EmuGenerationPipeline(nn.Module):
         ])
 
         self.args = kwargs['args']
+
+
+    # @torch.no_grad()
+    def batch_forward(
+        self,
+        inputs: List[Union[Image.Image, str]],
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 7.5,
+    ) -> Tuple[Image.Image, bool]:
+
+        # 0. Default height and width to unet
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
+
+        device = self.emu_encoder.ln_visual.weight.device
+        dtype = self.emu_encoder.ln_visual.weight.dtype
+
+        do_classifier_free_guidance = guidance_scale > 1.0
+
+        # 1. Encode input prompt
+        batch_size = self.args.batch_size
+
+        prompt_embeds = self._prepare_and_encode_inputs_batch(
+            inputs,
+            device,
+            dtype,
+            do_classifier_free_guidance,
+        )
+
+        # 2. Prepare timesteps
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
+        timesteps = self.scheduler.timesteps
+
+        # 3. Prepare latent variables
+        # Bx4xHxW
+        shape = (
+            batch_size,
+            self.unet.config.in_channels,
+            height // self.vae_scale_factor,
+            width // self.vae_scale_factor
+        )
+        latents = torch.randn(shape, device=device, dtype=dtype)
+
+        # 4. Denoising loop
+        # for t in tqdm(timesteps):
+        for t in timesteps:
+            # expand the latents if we are doing classifier free guidance
+            # 2B x 4 x H x W
+            latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+
+            # predict the noise residual
+            noise_pred = self.unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embeds,
+            ).sample
+
+            # perform guidance
+            if do_classifier_free_guidance:
+                noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+
+            # compute the previous noisy sample x_t -> x_t-1
+            latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+
+        # 8. Post-processing
+        image, raw_image = self.decode_latents(latents)
         
+        has_nsfw_concept = None
+        if not self.args.train:
+            # 9. Run safety checker
+            image, has_nsfw_concept = self.run_safety_checker(
+                image,
+                device,
+                dtype
+            )
+
+            # 10. Convert to PIL
+            image = self.numpy_to_pil(image)
+            
+        return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept, raw_image
+
+    
     # @torch.no_grad()
     def forward(
         self,
@@ -190,6 +275,50 @@ class EmuGenerationPipeline(nn.Module):
         prompt = self.emu_encoder.generate_image(
             text=text_prompt,
             image=image_prompt,
+            placeholder=placeholder,
+        )
+
+        return prompt
+
+    @torch.no_grad()
+    def _prepare_and_encode_inputs_batch(
+        self,
+        inputs: List[Union[str, Image.Image]],
+        device: torch.device = "cpu",
+        dtype: str = torch.float32,
+        do_classifier_free_guidance: bool = False,
+        placeholder: str = "[<IMG_PLH>]"
+    ) -> torch.Tensor:
+    
+        batch_text_promot = []
+        batch_image_prompt = []
+        for bi in range(self.args.batch_size):
+            text_prompt = ""
+            image_prompt = []
+            for x in inputs[bi]:
+                if isinstance(x, str):
+                    text_prompt += x
+                else:
+                    text_prompt += placeholder
+                    image_prompt.append(self.transform(x))
+
+            # Nx3x224x224
+            if len(image_prompt) == 0:
+                image_prompt = None
+            else:
+                image_prompt = torch.stack(image_prompt)
+                image_prompt = image_prompt.type(dtype).to(device)
+
+            if do_classifier_free_guidance:
+                text_prompt = [text_prompt, ""]
+            else:
+                text_prompt = [text_prompt]
+            batch_text_promot.extend(text_prompt)
+            batch_image_prompt.append(image_prompt)
+
+        prompt = self.emu_encoder.generate_image_batch(
+            text=batch_text_promot,
+            image=batch_image_prompt,
             placeholder=placeholder,
         )
 

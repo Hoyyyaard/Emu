@@ -331,7 +331,7 @@ def visual_decoding_example(pipeline, args):
             
             batch_squences = []
             batch_gt_images = []
-            batch_loss = []
+
             for bii in range(args.batch_size):
                 gt_image = Image.open(batch[1][bii]).convert("RGB")
                 gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.cuda.current_device()).requires_grad_(True).to(torch.float16)
@@ -340,21 +340,22 @@ def visual_decoding_example(pipeline, args):
                     Image.open(batch[0][1][bii]).convert("RGB"),
                     batch[0][2][bii],
                 ]
+                batch_squences.append(squence)
+                batch_gt_images.append(gt_image)
             
 
-                image, safety, raw_image = pipeline(
-                    squence,
-                    height=512,
-                    width=512,
-                    num_inference_steps=50,
-                    guidance_scale=10.,
-                )
-                
-                raw_image = raw_image.to(torch.float16)
-                
-                batch_loss.append(loss_freg(raw_image, gt_image))
+            image, safety, batch_raw_image = pipeline.batch_forward(
+                batch_squences,
+                height=512,
+                width=512,
+                num_inference_steps=50,
+                guidance_scale=10.,
+            )
+            
+            batch_gt_images = torch.cat(batch_gt_images,dim=0).to(torch.float16)
+            
+            loss = loss_freg(batch_raw_image, batch_gt_images)
         
-            loss = sum(batch_loss)/len(batch_loss)
             
             if (rank == 0):
                 logger.info('Train Epoch: {} Batch: {}\t Loss: {:.6f} \t  Lr: {}'.format(epoch, bi, loss, optimizer.state_dict()['param_groups'][0]['lr']))
@@ -369,13 +370,13 @@ def visual_decoding_example(pipeline, args):
             #     torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
         
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
             
             torch.cuda.empty_cache()
             optimizer.zero_grad()
             pipeline.zero_grad()
 
-        if epoch % 10 == 0:
+        if epoch % 5 == 0:
             # use a barrier to make sure training is done on all ranks
             dist.barrier()
             # state_dict for FSDP model is only available on Nightlies for now
