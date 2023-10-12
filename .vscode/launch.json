@@ -38,7 +38,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "python": "/root/Projects/miniconda3/envs/emu/bin/python",
-            "env": {"CUDA_VISIBLE_DEVICES":"5"},
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
             "args":[
                 "--train",
                 "--lora",

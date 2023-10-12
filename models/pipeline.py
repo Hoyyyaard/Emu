@@ -154,9 +154,9 @@ class EmuGenerationPipeline(nn.Module):
             )
 
             # 10. Convert to PIL
-            image = self.numpy_to_pil(image)
+            # image = self.numpy_to_pil(image)
             
-        return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept, raw_image
+        return image, has_nsfw_concept if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
     
     # @torch.no_grad()
@@ -229,16 +229,16 @@ class EmuGenerationPipeline(nn.Module):
         image, raw_image = self.decode_latents(latents)
         
         has_nsfw_concept = None
-        if not self.args.train:
-            # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(
-                image,
-                device,
-                dtype
-            )
 
-            # 10. Convert to PIL
-            image = self.numpy_to_pil(image)
+        # 9. Run safety checker
+        image, has_nsfw_concept = self.run_safety_checker(
+            image,
+            device,
+            dtype
+        )
+
+        # 10. Convert to PIL
+        image = self.numpy_to_pil(image)
             
         return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
@@ -292,7 +292,7 @@ class EmuGenerationPipeline(nn.Module):
     
         batch_text_promot = []
         batch_image_prompt = []
-        for bi in range(self.args.batch_size):
+        for bi in range(len(inputs)):
             text_prompt = ""
             image_prompt = []
             for x in inputs[bi]:

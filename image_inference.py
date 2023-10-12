@@ -168,7 +168,7 @@ writer = SummaryWriter(f'{args.log_dir}/log')
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = '12325'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -332,7 +332,7 @@ def visual_decoding_example(pipeline, args):
             batch_squences = []
             batch_gt_images = []
 
-            for bii in range(args.batch_size):
+            for bii in range(len(batch[1])):
                 gt_image = Image.open(batch[1][bii]).convert("RGB")
                 gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.cuda.current_device()).requires_grad_(True).to(torch.float16)
                 squence = [
@@ -344,7 +344,7 @@ def visual_decoding_example(pipeline, args):
                 batch_gt_images.append(gt_image)
             
 
-            image, safety, batch_raw_image = pipeline.batch_forward(
+            batch_image, batch_safety, batch_raw_image = pipeline.batch_forward(
                 batch_squences,
                 height=512,
                 width=512,
@@ -375,6 +375,16 @@ def visual_decoding_example(pipeline, args):
             torch.cuda.empty_cache()
             optimizer.zero_grad()
             pipeline.zero_grad()
+        
+            if (rank == 0 and bi % 20 == 0):
+                import numpy as np
+                vis_batch_gt_images = batch_gt_images.cpu().permute(0, 2, 3, 1).float().detach().numpy()
+                vis = np.concatenate((vis_batch_gt_images, batch_image), axis=0)
+                vis = pipeline.numpy_to_pil(vis)
+                if not os.path.exists(p:=(args.log_dir + f"/vis")):
+                    os.makedirs(p)
+                for iii, vi in enumerate(vis):
+                    vi.save(args.log_dir + f"/vis/{epoch}_{bi}_{iii}.png")
 
         if epoch % 5 == 0:
             # use a barrier to make sure training is done on all ranks
