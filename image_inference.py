@@ -13,7 +13,7 @@ import torch
 from models.modeling_emu import Emu
 from utils import process_img, process_video
 import functools
-
+import numpy as np
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -199,7 +199,7 @@ def fsdp_main(rank, world_size, args, emu_encoder):
         args=args,
     )
     # pipeline = pipeline.bfloat16().cuda()
-    pipeline = pipeline.to(torch.float16)
+    pipeline = pipeline.to(torch.bfloat16)
     
     # if args.train:
     #     pipeline.eval()
@@ -305,7 +305,6 @@ def visual_decoding_example(pipeline, args):
     
     global_step = 0
     
-
     # pipeline.train()
     # pipeline.eval()
     # pipeline.unet.train()
@@ -322,10 +321,6 @@ def visual_decoding_example(pipeline, args):
     for epoch in range(args.epochs):
         
         train_sampler.set_epoch(epoch)
-        
-        
-        
-        
 
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
 
@@ -336,7 +331,7 @@ def visual_decoding_example(pipeline, args):
 
             for bii in range(len(batch[1])):
                 gt_image = Image.open(batch[1][bii])
-                gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.float16).requires_grad_(True).to(torch.cuda.current_device())
+                gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.bfloat16).requires_grad_(True).to(torch.cuda.current_device())
                 squence = [
                     batch[0][0][bii],
                     Image.open(batch[0][1][bii]),
@@ -350,7 +345,7 @@ def visual_decoding_example(pipeline, args):
                 batch_squences,
                 height=512,
                 width=512,
-                num_inference_steps=5,
+                num_inference_steps=30,
                 guidance_scale=10.,
             )
             
@@ -361,7 +356,7 @@ def visual_decoding_example(pipeline, args):
             # g.view()
             # g.render(filename='graph', view=False,format='pdf') 
             
-            batch_gt_images = torch.cat(batch_gt_images,dim=0).to(torch.float16)
+            batch_gt_images = torch.cat(batch_gt_images,dim=0)
             loss_freg = torch.nn.MSELoss()
             loss = loss_freg(batch_raw_image, batch_gt_images)
         
@@ -380,22 +375,21 @@ def visual_decoding_example(pipeline, args):
             loss.backward()
 
                 
-            for n,p in pipeline.unet.named_parameters():
-                if not torch.sum(p.grad) == 0:
-                    print(n)
+            # for n,p in pipeline.unet.named_parameters():
+            #     if not torch.sum(p.grad) == 0:
+            #         print(n)
 
             # if args.clip_norm:
             #     torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
         
             optimizer.step()
-            # scheduler.step()
+            scheduler.step()
             
             torch.cuda.empty_cache()
             optimizer.zero_grad()
             # pipeline.zero_grad()
         
             if (rank == 0 and bi % 20 == 0):
-                import numpy as np
                 vis_batch_gt_images = batch_gt_images.cpu().permute(0, 2, 3, 1).float().detach().numpy()
                 vis = np.concatenate((vis_batch_gt_images, batch_image), axis=0)
                 vis = pipeline.numpy_to_pil(vis)
@@ -409,9 +403,15 @@ def visual_decoding_example(pipeline, args):
             dist.barrier()
             # state_dict for FSDP model is only available on Nightlies for now
             states = pipeline.state_dict()
+            unet_state = {}
+            print("Model's state_dict:")
+            for param_tensor in states:
+                if 'unet' in param_tensor:
+                    unet_state.update({param_tensor:states[param_tensor]})
+
             if rank == 0:
-                os.mkdir(args.log_dir+"/ckpt")
-                torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_cls{loss:.2f}")
+                os.mkdir(args.log_dir+"/unet_ckpt")
+                torch.save(unet_state, args.log_dir+f"/unet_ckpt/finetune_{epoch}_cls{loss:.2f}")
 
 if __name__ == "__main__":
     args = parse_args()

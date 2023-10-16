@@ -40,6 +40,7 @@ class EmuGenerationPipeline(nn.Module):
             unet,
         )
         self.unet.enable_gradient_checkpointing()
+        
         self.vae = AutoencoderKL.from_pretrained(
             vae,
         )
@@ -56,6 +57,7 @@ class EmuGenerationPipeline(nn.Module):
 
         # self.emu_encoder = self.prepare_emu("Emu-14B", multimodal_model, **kwargs)
         self.emu_encoder = emu_encoder
+        self.emu_encoder.set_grad_checkpointing()
 
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.eval()
@@ -142,16 +144,18 @@ class EmuGenerationPipeline(nn.Module):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
         # 8. Post-processing
+        has_nsfw_concept = None
+        image = None
         image, raw_image = self.decode_latents(latents)
         
-        has_nsfw_concept = None
-        if not self.args.train:
-            # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(
-                image,
-                device,
-                dtype
-            )
+
+        # if not self.args.train:
+        #     # 9. Run safety checker
+        #     image, has_nsfw_concept = self.run_safety_checker(
+        #         image,
+        #         device,
+        #         dtype
+        #     )
 
             # 10. Convert to PIL
             # image = self.numpy_to_pil(image)
@@ -226,10 +230,10 @@ class EmuGenerationPipeline(nn.Module):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
         # 8. Post-processing
-        raw_image = self.decode_latents(latents)
-        
         image = None
         has_nsfw_concept = None
+        image, raw_image = self.decode_latents(latents)
+        
 
         # 9. Run safety checker
         # image, has_nsfw_concept = self.run_safety_checker(
@@ -331,8 +335,8 @@ class EmuGenerationPipeline(nn.Module):
         raw_image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         # image = raw_image.cpu().permute(0, 2, 3, 1).float().numpy()
-        # image = raw_image.cpu().permute(0, 2, 3, 1).float().detach().numpy()
-        return raw_image
+        vis_image = raw_image.cpu().permute(0, 2, 3, 1).float().detach().numpy()
+        return vis_image, raw_image
 
     def numpy_to_pil(self, images: np.ndarray) -> List[Image.Image]:
         """
