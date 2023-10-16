@@ -226,21 +226,22 @@ class EmuGenerationPipeline(nn.Module):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
         # 8. Post-processing
-        image, raw_image = self.decode_latents(latents)
+        raw_image = self.decode_latents(latents)
         
+        image = None
         has_nsfw_concept = None
 
         # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(
-            image,
-            device,
-            dtype
-        )
+        # image, has_nsfw_concept = self.run_safety_checker(
+        #     image,
+        #     device,
+        #     dtype
+        # )
 
-        # 10. Convert to PIL
-        image = self.numpy_to_pil(image)
+        # # 10. Convert to PIL
+        # image = self.numpy_to_pil(image)
             
-        return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept, raw_image
+        return image, has_nsfw_concept if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
     @torch.no_grad()
     def _prepare_and_encode_inputs(
@@ -330,8 +331,8 @@ class EmuGenerationPipeline(nn.Module):
         raw_image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
         # image = raw_image.cpu().permute(0, 2, 3, 1).float().numpy()
-        image = raw_image.cpu().permute(0, 2, 3, 1).float().detach().numpy()
-        return image, raw_image
+        # image = raw_image.cpu().permute(0, 2, 3, 1).float().detach().numpy()
+        return raw_image
 
     def numpy_to_pil(self, images: np.ndarray) -> List[Image.Image]:
         """

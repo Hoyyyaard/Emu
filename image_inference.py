@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-
+        
+import tqdm
 import argparse
 
 from PIL import Image
@@ -181,7 +182,8 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     setup(rank, world_size)
     torch.cuda.set_device(rank)
 
-    emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "results/finetune_exp/lrb{0.00001}-epo{100}-bs{8}-norm{wo}-ckpt{w}-loss{all}-lora{w}-lrd{w}-bf16{wo}-data{all}/ckpt/finetune_20_cls0.20_reg0.13.bin", args=args)
+    if args.mlt_emu:
+        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "results/finetune_exp/lrb{0.00001}-epo{100}-bs{8}-norm{wo}-ckpt{w}-loss{all}-lora{w}-lrd{w}-bf16{wo}-data{all}/ckpt/finetune_20_cls0.20_reg0.13.bin", args=args)
     
 
     wrapper_kwargs = dict(
@@ -304,27 +306,27 @@ def visual_decoding_example(pipeline, args):
     global_step = 0
     
 
-    
-    pipeline.eval()
-    pipeline.unet.train()
-    total_train_param = 0
+    # pipeline.train()
+    # pipeline.eval()
+    # pipeline.unet.train()
+    # total_train_param = 0
     for n,p in pipeline.named_parameters():
-        if not 'unet' in n:
-            p.requires_grad_ = False
+        if 'emu_encoder' in n:
+            p.requires_grad_(False)
         else:
-            p.requires_grad_ = True
-            total_train_param += p.numel()
-    print("trainable params: ", total_train_param)
+            p.requires_grad_(True)
+    #         # print(n)
+    #         total_train_param += p.numel()
+    # print("trainable params: ", total_train_param)
     
     for epoch in range(args.epochs):
         
         train_sampler.set_epoch(epoch)
         
         
-        loss_freg = torch.nn.MSELoss()
         
         
-        import tqdm
+
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
 
             global_step += 1
@@ -333,11 +335,11 @@ def visual_decoding_example(pipeline, args):
             batch_gt_images = []
 
             for bii in range(len(batch[1])):
-                gt_image = Image.open(batch[1][bii]).convert("RGB")
-                gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.cuda.current_device()).requires_grad_(True).to(torch.float16)
+                gt_image = Image.open(batch[1][bii])
+                gt_image = pipeline.gt_transform(gt_image).unsqueeze(0).to(torch.float16).requires_grad_(True).to(torch.cuda.current_device())
                 squence = [
                     batch[0][0][bii],
-                    Image.open(batch[0][1][bii]).convert("RGB"),
+                    Image.open(batch[0][1][bii]),
                     batch[0][2][bii],
                 ]
                 batch_squences.append(squence)
@@ -348,23 +350,39 @@ def visual_decoding_example(pipeline, args):
                 batch_squences,
                 height=512,
                 width=512,
-                num_inference_steps=50,
+                num_inference_steps=5,
                 guidance_scale=10.,
             )
             
-            batch_gt_images = torch.cat(batch_gt_images,dim=0).to(torch.float16)
+            # import sys
+            # sys.setrecursionlimit(100000)
+            # from torchviz import make_dot
+            # g = make_dot(batch_raw_image)
+            # g.view()
+            # g.render(filename='graph', view=False,format='pdf') 
             
+            batch_gt_images = torch.cat(batch_gt_images,dim=0).to(torch.float16)
+            loss_freg = torch.nn.MSELoss()
             loss = loss_freg(batch_raw_image, batch_gt_images)
         
             
             if (rank == 0):
                 logger.info('Train Epoch: {} Batch: {}\t Loss: {:.6f} \t  Lr: {}'.format(epoch, bi, loss, optimizer.state_dict()['param_groups'][0]['lr']))
                 writer.add_scalar("train_loss_decoding_rank0", loss.item(), global_step=global_step)
-                
+            
+            
+            # for n,p in pipeline.named_parameters():
+            #     if p.requires_grad == True:
+            #         print(n)
             
             # with torch.autograd.detect_anomaly():
             # loss.backward(retain_graph=True)
             loss.backward()
+
+                
+            for n,p in pipeline.unet.named_parameters():
+                if not torch.sum(p.grad) == 0:
+                    print(n)
 
             # if args.clip_norm:
             #     torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
@@ -374,7 +392,7 @@ def visual_decoding_example(pipeline, args):
             
             torch.cuda.empty_cache()
             optimizer.zero_grad()
-            pipeline.zero_grad()
+            # pipeline.zero_grad()
         
             if (rank == 0 and bi % 20 == 0):
                 import numpy as np
