@@ -39,11 +39,14 @@ class EmuGenerationPipeline(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(
             unet,
         )
-        self.unet.enable_gradient_checkpointing()
+        
         
         self.vae = AutoencoderKL.from_pretrained(
             vae,
         )
+        
+        
+        
         self.scheduler = PNDMScheduler.from_pretrained(
             scheduler,
         )
@@ -57,7 +60,7 @@ class EmuGenerationPipeline(nn.Module):
 
         # self.emu_encoder = self.prepare_emu("Emu-14B", multimodal_model, **kwargs)
         self.emu_encoder = emu_encoder
-        self.emu_encoder.set_grad_checkpointing()
+
 
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.eval()
@@ -76,8 +79,12 @@ class EmuGenerationPipeline(nn.Module):
 
         self.args = kwargs['args']
 
+        if self.args.gckpt:
+            self.unet.enable_gradient_checkpointing()
+            self.vae.enable_gradient_checkpointing()
+            self.emu_encoder.set_grad_checkpointing()
 
-    # @torch.no_grad()
+    @torch.no_grad()
     def batch_forward(
         self,
         inputs: List[Union[Image.Image, str]],
@@ -110,6 +117,7 @@ class EmuGenerationPipeline(nn.Module):
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
+        
         # 3. Prepare latent variables
         # Bx4xHxW
         shape = (
@@ -144,26 +152,91 @@ class EmuGenerationPipeline(nn.Module):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
         # 8. Post-processing
-        has_nsfw_concept = None
-        image = None
-        image, raw_image = self.decode_latents(latents)
+        image = self.decode_latents(latents)
+
+        # 9. Run safety checker
+        image, has_nsfw_concept = self.run_safety_checker(
+            image,
+            device,
+            dtype
+        )
+
+        # 10. Convert to PIL
+        # image = self.numpy_to_pil(image)
+        return image, has_nsfw_concept if has_nsfw_concept is not None else has_nsfw_concept
+    
+    def batch_visual_decoding(
+        self,
+        inputs: List[Union[Image.Image, str]],
+        batch_tgt_images,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 7.5,
+    ) -> Tuple[Image.Image, bool]:
+
+        # 0. Default height and width to unet
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
+
+        device = self.emu_encoder.ln_visual.weight.device
+        dtype = self.emu_encoder.ln_visual.weight.dtype
+
+        do_classifier_free_guidance = guidance_scale > 1.0
+
+        # 1. Encode input prompt
+        batch_size = self.args.batch_size
+
+        prompt_embeds = self._prepare_and_encode_inputs_batch(
+            inputs,
+            device,
+            dtype,
+            do_classifier_free_guidance,
+        )
+
+        # 2. Prepare timesteps
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
+        # timesteps = self.scheduler.timesteps
+
+        latents = self.vae.encode(batch_tgt_images.to(torch.bfloat16)).latent_dist.sample()
+        latents = latents * self.vae.config.scaling_factor
+
+        # Sample noise that we'll add to the latents
+        noise = torch.randn_like(latents)
         
+        # Sample a random timestep for each image
+        timesteps = torch.randint(0, num_inference_steps, (batch_size,), device=latents.device)
+        timesteps = timesteps.long()
+        
+        # Add noise of timesteps to latents
+        noisy_latents = self.scheduler.add_noise(latents, noise, timesteps)
+        
+        # Prepare noise label
+        target = noise
+        
+        # Predict the noise residual and compute loss
+        latent_model_input = torch.cat([noisy_latents] * 2) if do_classifier_free_guidance else noisy_latents
+        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timesteps)
+        timesteps =  torch.cat([timesteps] * 2)
+        noise_pred = self.unet(latent_model_input, timesteps, prompt_embeds).sample
+        
+        # perform guidance
+        if do_classifier_free_guidance:
+            noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+        
+        
+        # Compute loss
+        import torch.nn.functional as F
+        loss = F.mse_loss(noise_pred.float(), target.float(), reduction="none")
+        loss = loss.mean(dim=list(range(1, len(loss.shape))))
+        loss = loss.mean()
+        
+        return loss
 
-        # if not self.args.train:
-        #     # 9. Run safety checker
-        #     image, has_nsfw_concept = self.run_safety_checker(
-        #         image,
-        #         device,
-        #         dtype
-        #     )
-
-            # 10. Convert to PIL
-            # image = self.numpy_to_pil(image)
-            
-        return image, has_nsfw_concept if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
     
-    # @torch.no_grad()
+    @torch.no_grad()
     def forward(
         self,
         inputs: List[Union[Image.Image, str]],
@@ -230,22 +303,19 @@ class EmuGenerationPipeline(nn.Module):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
         # 8. Post-processing
-        image = None
-        has_nsfw_concept = None
-        image, raw_image = self.decode_latents(latents)
-        
+        image = self.decode_latents(latents)
 
         # 9. Run safety checker
-        # image, has_nsfw_concept = self.run_safety_checker(
-        #     image,
-        #     device,
-        #     dtype
-        # )
+        image, has_nsfw_concept = self.run_safety_checker(
+            image,
+            device,
+            dtype
+        )
 
-        # # 10. Convert to PIL
-        # image = self.numpy_to_pil(image)
+        # 10. Convert to PIL
+        image = self.numpy_to_pil(image)
+        return image[0], has_nsfw_concept[0] if has_nsfw_concept is not None else has_nsfw_concept
             
-        return image, has_nsfw_concept if has_nsfw_concept is not None else has_nsfw_concept, raw_image
 
     @torch.no_grad()
     def _prepare_and_encode_inputs(
@@ -332,11 +402,10 @@ class EmuGenerationPipeline(nn.Module):
     def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents).sample
-        raw_image = (image / 2 + 0.5).clamp(0, 1)
+        image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloat16
-        # image = raw_image.cpu().permute(0, 2, 3, 1).float().numpy()
-        vis_image = raw_image.cpu().permute(0, 2, 3, 1).float().detach().numpy()
-        return vis_image, raw_image
+        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+        return image
 
     def numpy_to_pil(self, images: np.ndarray) -> List[Image.Image]:
         """

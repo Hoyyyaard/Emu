@@ -212,8 +212,9 @@ def prepare_model(model_name, args):
         model.decoder.lm.print_trainable_parameters()
 
         model.decoder.lm.base_model.model.lm_head.train()
+        model.decoder.lm.base_model.model.lm_head.requires_grad_(True)
         model.decoder.lm.base_model.model.stu_regress_head.train()
- 
+        model.decoder.lm.base_model.model.stu_regress_head.requires_grad_(True)
 
     return model
 
@@ -592,7 +593,7 @@ def fsdp_main(rank, world_size, model, args):
     # model = DDP(model)
     model.wrap_fsdp()
     if args.gckpt:
-        model.decoder.lm.gradient_checkpointing_enable()
+        model.set_grad_checkpointing()
     
     total_params = 0
     if rank == 0:
@@ -633,7 +634,7 @@ if __name__ == '__main__':
     
     emu_model = None
     if not args.mlt_emu:
-        mtype = torch.bfloat16 if args.bfloat16 else torch.float16
+        mtype = torch.bf16 if args.bf16 else torch.float16
         emu_model = prepare_model('Emu-14B', args).to(mtype)
     
     mp.spawn(fsdp_main,

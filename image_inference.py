@@ -101,6 +101,11 @@ def parse_args():
         default=10,
     )
     parser.add_argument(
+        "--classify_scale",
+        type=float,
+        default=3.,
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
         default=1,
@@ -306,17 +311,23 @@ def visual_decoding_example(pipeline, args):
     global_step = 0
     
     # pipeline.train()
-    # pipeline.eval()
-    # pipeline.unet.train()
-    # total_train_param = 0
+    # pipeline.eval() 
+    
+    pipeline.emu_encoder.eval()
+    pipeline.emu_encoder.requires_grad_(False)
+    pipeline.vae.eval()
+    pipeline.vae.requires_grad_(False)
+    pipeline.safety_checker.eval()
+    pipeline.safety_checker.requires_grad_(False)
+    pipeline.unet.train()
+    pipeline.unet.requires_grad_(True)
+    total_train_param = 0
     for n,p in pipeline.named_parameters():
-        if 'emu_encoder' in n:
-            p.requires_grad_(False)
-        else:
-            p.requires_grad_(True)
+        if p.requires_grad == True:
+
     #         # print(n)
-    #         total_train_param += p.numel()
-    # print("trainable params: ", total_train_param)
+            total_train_param += p.numel()
+    print("trainable params: ", total_train_param)
     
     for epoch in range(args.epochs):
         
@@ -340,13 +351,15 @@ def visual_decoding_example(pipeline, args):
                 batch_squences.append(squence)
                 batch_gt_images.append(gt_image)
             
-
-            batch_image, batch_safety, batch_raw_image = pipeline.batch_forward(
+            batch_gt_images = torch.cat(batch_gt_images,dim=0)
+            
+            loss = pipeline.batch_visual_decoding(
                 batch_squences,
+                batch_gt_images,
                 height=512,
                 width=512,
-                num_inference_steps=30,
-                guidance_scale=10.,
+                num_inference_steps=50,
+                guidance_scale=args.classify_scale,
             )
             
             # import sys
@@ -355,10 +368,6 @@ def visual_decoding_example(pipeline, args):
             # g = make_dot(batch_raw_image)
             # g.view()
             # g.render(filename='graph', view=False,format='pdf') 
-            
-            batch_gt_images = torch.cat(batch_gt_images,dim=0)
-            loss_freg = torch.nn.MSELoss()
-            loss = loss_freg(batch_raw_image, batch_gt_images)
         
             
             if (rank == 0):
@@ -374,11 +383,15 @@ def visual_decoding_example(pipeline, args):
             # loss.backward(retain_graph=True)
             loss.backward()
 
-                
-            # for n,p in pipeline.unet.named_parameters():
-            #     if not torch.sum(p.grad) == 0:
-            #         print(n)
+            
+            nono_zero_grad = 0
+            for n,p in pipeline.unet.named_parameters():
+                if not torch.sum(p.grad) == 0:
+                    nono_zero_grad += 1
+                    # print(n)
 
+            assert nono_zero_grad > 0
+            
             # if args.clip_norm:
             #     torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
         
@@ -389,9 +402,14 @@ def visual_decoding_example(pipeline, args):
             optimizer.zero_grad()
             # pipeline.zero_grad()
         
-            if (rank == 0 and bi % 20 == 0):
+            if (rank == 0 and bi % 5 == 0):
+                batch_image, batch_safety = pipeline.batch_forward(batch_squences,
+                                                    height=512,
+                                                    width=512,
+                                                    num_inference_steps=50,
+                                                    guidance_scale=args.classify_scale,)
                 vis_batch_gt_images = batch_gt_images.cpu().permute(0, 2, 3, 1).float().detach().numpy()
-                vis = np.concatenate((vis_batch_gt_images, batch_image), axis=0)
+                vis = np.concatenate((vis_batch_gt_images, batch_image), axis=2)
                 vis = pipeline.numpy_to_pil(vis)
                 if not os.path.exists(p:=(args.log_dir + f"/vis")):
                     os.makedirs(p)
@@ -428,7 +446,7 @@ if __name__ == "__main__":
     
     emu_encoder = None
     if not args.mlt_emu:
-        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "ckpts/multimodal_encoder/pytorch_model.bin", args=args)
+        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "results/finetune_exp/lrb{0.00001}-epo{100}-bs{8}-norm{wo}-ckpt{w}-loss{all}-lora{w}-lrd{w}-bf16{wo}-data{all}/ckpt/finetune_20_cls0.20_reg0.13.bin", args=args)
     
     # WORLD_SIZE = 8
     mp.spawn(fsdp_main,
