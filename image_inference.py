@@ -304,7 +304,7 @@ def visual_decoding_example(pipeline, args):
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
     # nan但是optimizer step后出现nan
-    optimizer = optim.AdamW(pipeline.unet.parameters(), lr = args.lr_base, betas=(0.9,0.999), weight_decay=1e-2, eps=1e-5)
+    optimizer = optim.AdamW(pipeline.unet.parameters(), lr = args.lr_base, betas=(0.9,0.999), weight_decay=1e-2, eps=1e-8)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -333,8 +333,11 @@ def visual_decoding_example(pipeline, args):
         
         train_sampler.set_epoch(epoch)
 
-        for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
-
+        pbar = tqdm.tqdm(total=len(train_loader), desc=f'Epoch {epoch}')
+        # for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
+        for bi ,batch in enumerate(train_loader):
+            if rank == 0:
+                pbar.update(1)
             global_step += 1
             
             batch_squences = []
@@ -402,7 +405,7 @@ def visual_decoding_example(pipeline, args):
             optimizer.zero_grad()
             # pipeline.zero_grad()
         
-            if (rank == 0 and bi % 5 == 0):
+            if (rank == 0 and bi % 10 == 0):
                 batch_image, batch_safety = pipeline.batch_forward(batch_squences,
                                                     height=512,
                                                     width=512,

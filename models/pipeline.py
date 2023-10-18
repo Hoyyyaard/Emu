@@ -155,11 +155,12 @@ class EmuGenerationPipeline(nn.Module):
         image = self.decode_latents(latents)
 
         # 9. Run safety checker
-        image, has_nsfw_concept = self.run_safety_checker(
-            image,
-            device,
-            dtype
-        )
+        has_nsfw_concept = None
+        # image, has_nsfw_concept = self.run_safety_checker(
+        #     image,
+        #     device,
+        #     dtype
+        # )
 
         # 10. Convert to PIL
         # image = self.numpy_to_pil(image)
@@ -185,7 +186,7 @@ class EmuGenerationPipeline(nn.Module):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 1. Encode input prompt
-        batch_size = self.args.batch_size
+        batch_size = batch_tgt_images.shape[0]
 
         prompt_embeds = self._prepare_and_encode_inputs_batch(
             inputs,
@@ -228,9 +229,12 @@ class EmuGenerationPipeline(nn.Module):
         
         # Compute loss
         import torch.nn.functional as F
-        loss = F.mse_loss(noise_pred.float(), target.float(), reduction="none")
+        loss = F.mse_loss(noise_pred, target, reduction="none")
         loss = loss.mean(dim=list(range(1, len(loss.shape))))
         loss = loss.mean()
+        
+        
+        # loss = F.mse_loss(noise_pred, target)
         
         return loss
 
