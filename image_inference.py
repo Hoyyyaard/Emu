@@ -83,6 +83,12 @@ def parse_args():
         default='results/debug/',
 
     )
+    parser.add_argument(
+        "--emu_ckpt",
+        type=str,
+        default='ckpts/multimodal_encoder/pytorch_model.bin',
+
+    )
     
     parser.add_argument(
         "--mlt_emu",
@@ -103,7 +109,7 @@ def parse_args():
     parser.add_argument(
         "--classify_scale",
         type=float,
-        default=3.,
+        default=10.,
     )
     parser.add_argument(
         "--batch_size",
@@ -174,7 +180,7 @@ writer = SummaryWriter(f'{args.log_dir}/log')
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12325'
+    os.environ['MASTER_PORT'] = '55567'
 
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
@@ -188,7 +194,8 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     torch.cuda.set_device(rank)
 
     if args.mlt_emu:
-        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "results/finetune_exp/lrb{0.00001}-epo{100}-bs{8}-norm{wo}-ckpt{w}-loss{all}-lora{w}-lrd{w}-bf16{wo}-data{all}/ckpt/finetune_20_cls0.20_reg0.13.bin", args=args)
+        logger.info(f"Emu ckpt: {args.emu_ckpt}")
+        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", args.emu_ckpt, args=args)
     
 
     wrapper_kwargs = dict(
@@ -212,7 +219,7 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     
     pipeline.wrap_fsdp(wrapper_kwargs)
     
-    visual_decoding_example(pipeline, args)
+    visual_decoding_example(pipeline, args, world_size)
 
     # image blend case
     # image_1 = Image.open("examples/sunflower.png")
@@ -274,9 +281,10 @@ def fsdp_main(rank, world_size, args, emu_encoder):
     # if rank == 0:
     #     print(f'Finish torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
 
-def visual_decoding_example(pipeline, args):
+def visual_decoding_example(pipeline, args, world_size):
     rank = torch.cuda.current_device()
     
+    print("rank",rank)
     from src.pretrain_dataset import Visual_Decoding_Dataset
     dataset = Visual_Decoding_Dataset(_dataset_path=args.data_path)
     val_dataset = Visual_Decoding_Dataset(_dataset_path=args.val_data_path)
@@ -291,7 +299,9 @@ def visual_decoding_example(pipeline, args):
     train_loader = torch.utils.data.DataLoader(dataset,
                                             sampler=train_sampler,
                                             batch_size=args.batch_size ,
-                                            num_workers=4)
+                                            num_workers=1,
+                                            drop_last=True)
+    
     val_sampler = DistributedSampler(val_dataset, 
                                 rank=rank, 
                                 num_replicas=torch.cuda.device_count(), 
@@ -299,7 +309,8 @@ def visual_decoding_example(pipeline, args):
     val_loader = torch.utils.data.DataLoader(val_dataset,
                                             sampler=val_sampler,
                                             batch_size=1 ,
-                                            num_workers=1)
+                                            num_workers=1,
+                                            drop_last=True)
     
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
@@ -324,7 +335,6 @@ def visual_decoding_example(pipeline, args):
     total_train_param = 0
     for n,p in pipeline.named_parameters():
         if p.requires_grad == True:
-
     #         # print(n)
             total_train_param += p.numel()
     print("trainable params: ", total_train_param)
@@ -332,13 +342,13 @@ def visual_decoding_example(pipeline, args):
     for epoch in range(args.epochs):
         
         train_sampler.set_epoch(epoch)
-
-        pbar = tqdm.tqdm(total=len(train_loader), desc=f'Epoch {epoch}')
+        if rank == 0:
+            pbar = tqdm.tqdm(total=len(train_loader), desc=f'Epoch {epoch}')
         # for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
         for bi ,batch in enumerate(train_loader):
             if rank == 0:
                 pbar.update(1)
-            global_step += 1
+            global_step += len(batch[1]) * torch.cuda.device_count()
             
             batch_squences = []
             batch_gt_images = []
@@ -374,7 +384,7 @@ def visual_decoding_example(pipeline, args):
         
             
             if (rank == 0):
-                logger.info('Train Epoch: {} Batch: {}\t Loss: {:.6f} \t  Lr: {}'.format(epoch, bi, loss, optimizer.state_dict()['param_groups'][0]['lr']))
+                logger.info('Train Epoch: {}\t Step: {}\tBatch: {}\t Loss: {:.6f} \t  Lr: {}'.format(epoch, global_step, bi, loss, optimizer.state_dict()['param_groups'][0]['lr']))
                 writer.add_scalar("train_loss_decoding_rank0", loss.item(), global_step=global_step)
             
             
@@ -391,22 +401,20 @@ def visual_decoding_example(pipeline, args):
             for n,p in pipeline.unet.named_parameters():
                 if not torch.sum(p.grad) == 0:
                     nono_zero_grad += 1
-                    # print(n)
-
             assert nono_zero_grad > 0
             
             # if args.clip_norm:
             #     torch.nn.utils.clip_grad_norm_(parameters=pipeline.parameters(), max_norm=10, norm_type=2)
         
             optimizer.step()
-            scheduler.step()
+            
             
             torch.cuda.empty_cache()
             optimizer.zero_grad()
             # pipeline.zero_grad()
         
-            if (rank == 0 and bi % 10 == 0):
-                batch_image, batch_safety = pipeline.batch_forward(batch_squences,
+            if (bi % 20 == 0 ):
+                batch_image, _ = pipeline.batch_forward(batch_squences,
                                                     height=512,
                                                     width=512,
                                                     num_inference_steps=50,
@@ -417,22 +425,27 @@ def visual_decoding_example(pipeline, args):
                 if not os.path.exists(p:=(args.log_dir + f"/vis")):
                     os.makedirs(p)
                 for iii, vi in enumerate(vis):
-                    vi.save(args.log_dir + f"/vis/{epoch}_{bi}_{iii}.png")
+                    vi.save(args.log_dir + f"/vis/{epoch}_{bi}_{rank}_{iii}.png")
+                    
 
-        if epoch % 5 == 0:
+        scheduler.step()
+        
+        if epoch % 5 == 0 :
+            print("Stop At Saving Parameters")
             # use a barrier to make sure training is done on all ranks
             dist.barrier()
             # state_dict for FSDP model is only available on Nightlies for now
             states = pipeline.state_dict()
-            unet_state = {}
-            print("Model's state_dict:")
-            for param_tensor in states:
-                if 'unet' in param_tensor:
-                    unet_state.update({param_tensor:states[param_tensor]})
-
+            
             if rank == 0:
-                os.mkdir(args.log_dir+"/unet_ckpt")
-                torch.save(unet_state, args.log_dir+f"/unet_ckpt/finetune_{epoch}_cls{loss:.2f}")
+                print("Save Unet Parameters")
+                unet_state = {}
+                for param_tensor in states:
+                    if 'unet' in param_tensor:
+                        unet_state.update({param_tensor:states[param_tensor]})
+                if not os.path.exists(p:=args.log_dir+"/unet_ckpt"):
+                    os.mkdir(p)
+                torch.save(unet_state, args.log_dir+f"/unet_ckpt/finetune_{epoch}_{global_step}_cls{loss:.2f}")
 
 if __name__ == "__main__":
     args = parse_args()
@@ -442,14 +455,15 @@ if __name__ == "__main__":
     # Using instruct tuning model as image encoder may cause unpredicted results
     assert args.instruct is False, "Image Generation currently do not support instruct tuning model"
 
-    
+    assert args.bf16 is True
      
     WORLD_SIZE = torch.cuda.device_count()
     logger.info(f"world size : {WORLD_SIZE}")
     
     emu_encoder = None
     if not args.mlt_emu:
-        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", "results/finetune_exp/lrb{0.00001}-epo{100}-bs{8}-norm{wo}-ckpt{w}-loss{all}-lora{w}-lrd{w}-bf16{wo}-data{all}/ckpt/finetune_20_cls0.20_reg0.13.bin", args=args)
+        logger.info(f"Emu ckpt: {args.emu_ckpt}")
+        emu_encoder = EmuGenerationPipeline.prepare_emu("Emu-14B", args.emu_ckpt, args=args)
     
     # WORLD_SIZE = 8
     mp.spawn(fsdp_main,

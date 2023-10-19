@@ -45,8 +45,6 @@ class EmuGenerationPipeline(nn.Module):
             vae,
         )
         
-        
-        
         self.scheduler = PNDMScheduler.from_pretrained(
             scheduler,
         )
@@ -217,13 +215,21 @@ class EmuGenerationPipeline(nn.Module):
         
         # Predict the noise residual and compute loss
         latent_model_input = torch.cat([noisy_latents] * 2) if do_classifier_free_guidance else noisy_latents
-        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timesteps)
+        #latent_model_input = self.scheduler.scale_model_input(latent_model_input, timesteps)
         timesteps =  torch.cat([timesteps] * 2)
-        noise_pred = self.unet(latent_model_input, timesteps, prompt_embeds).sample
+        #noise_pred = self.unet(latent_model_input, timesteps, prompt_embeds).sample
         
+        
+        if do_classifier_free_guidance:
+            noise_pred_cond = (self.unet(latent_model_input, timesteps, prompt_embeds).sample).chunk(2)[0]
+            import random
+            p = random.random()
+            uncond_embeds =  torch.zeros_like(prompt_embeds) if p < 0.1 else prompt_embeds
+            noise_pred_uncond = (self.unet(latent_model_input, timesteps, uncond_embeds).sample).chunk(2)[0]
+
         # perform guidance
         if do_classifier_free_guidance:
-            noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+            #noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
         
         

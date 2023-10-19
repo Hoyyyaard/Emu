@@ -260,6 +260,10 @@ def Emu_instruct_caption(img, emu_model):
     print(f"===> caption output: {output_text}\n")
 
 def finetune_example(emu_model, args):
+    
+    emu_model.train()
+    emu_model.requires_grad_(True)
+    
     itype = torch.bfloat16 if args.bf16 else torch.float16
     
     rank = torch.cuda.current_device()
@@ -292,12 +296,12 @@ def finetune_example(emu_model, args):
     param_groups = [
         {'params': emu_model.visual.parameters(), 'lr': 4 * args.lr_base},
         {'params': emu_model.decoder.parameters(), 'lr': 3 *  args.lr_base},
-        {'params': emu_model.cformer.parameters(), 'lr': 1 *  args.lr_base}
+        {'params': emu_model.cformer.parameters(), 'lr': 10 *  args.lr_base}
     ]
     
     # float16的有效动态范围： 5.960464477539063e-08 ~65504 故default的eps为 1e-8可能导致 计算中分母为0导致grad没有
     # nan但是optimizer step后出现nan
-    optimizer = optim.AdamW(param_groups, lr = args.lr_base, betas=(0.9,0.98), weight_decay=0.05, eps=1e-4)
+    optimizer = optim.AdamW(param_groups, lr = args.lr_base, betas=(0.9,0.98), weight_decay=0.05, eps=1e-6)
     
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
     
@@ -307,12 +311,9 @@ def finetune_example(emu_model, args):
         
         train_sampler.set_epoch(epoch)
         
-        ddp_loss_cls = torch.zeros(2).to(rank)
-        ddp_loss_reg = torch.zeros(2).to(rank)
-        
         for bi, batch in enumerate(tqdm.tqdm(train_loader, desc=f'Epoch {epoch}')):
             
-            global_step += 1
+            global_step += len(batch[1]) * torch.cuda.device_count()
             
             batch_prompts = list(batch[0])
             fps = batch[1]
@@ -357,6 +358,12 @@ def finetune_example(emu_model, args):
             optimizer.zero_grad()
             # with torch.autograd.detect_anomaly():
             loss.backward()
+            
+            nono_zero_grad = 0
+            for n,p in pipeline.unet.named_parameters():
+                if not torch.sum(p.grad) == 0:
+                    nono_zero_grad += 1
+            assert nono_zero_grad > 0
 
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.visual.parameters(), max_norm=10, norm_type=2)
             # torch.nn.utils.clip_grad_norm_(parameters=emu_model.cformer.parameters(), max_norm=10, norm_type=2)
@@ -432,7 +439,7 @@ def finetune_example(emu_model, args):
                     writer.add_scalar("train_loss_reg_per_img_rank0", (loss_reg/loss_reg_len).item(), global_step=global_step)
                     writer.add_scalar("train_loss_reg_rank0", loss_reg.item(), global_step=global_step)
                     writer.add_scalar("train_loss_cls_rank0", loss_cls.item(), global_step=global_step)
-                    logger.info('Train Epoch: {} Batch: {}\t CLS Loss: {:.6f} \t REGP Loss: {:.6f} Len: {} Lr: {}'.format(epoch, bi, loss_cls, loss_reg/loss_reg_len, loss_reg_len, optimizer.state_dict()['param_groups'][0]['lr']))
+                    logger.info('Train Epoch: {}\t Step: {}\tBatch: {}\t CLS Loss: {:.6f} \t REGP Loss: {:.6f} Len: {} Lr: {}'.format(epoch, global_step, bi, loss_cls, loss_reg/loss_reg_len, loss_reg_len, optimizer.state_dict()['param_groups'][0]['lr']))
             
             if bi % 50 == 0:
                 val_ddp_loss_cls = torch.zeros(2).to(rank)
@@ -492,7 +499,7 @@ def finetune_example(emu_model, args):
             states = emu_model.state_dict()
             if rank == 0:
                 os.mkdir(args.log_dir+"/ckpt")
-                torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_cls{loss_cls:.2f}_reg{(loss_reg/loss_reg_len):.2f}.bin")
+                torch.save(states, args.log_dir+f"/ckpt/finetune_{epoch}_{global_step}_cls{loss_cls:.2f}_reg{(loss_reg/loss_reg_len):.2f}.bin")
     # image = process_img(img_path='examples/dog.png', device=torch.cuda.current_device()).to(torch.float16)
     # text = 'There are two dogs.[IMG]'
     # for _ in range(32):
