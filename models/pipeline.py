@@ -215,21 +215,24 @@ class EmuGenerationPipeline(nn.Module):
         
         # Predict the noise residual and compute loss
         latent_model_input = torch.cat([noisy_latents] * 2) if do_classifier_free_guidance else noisy_latents
-        #latent_model_input = self.scheduler.scale_model_input(latent_model_input, timesteps)
+        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timesteps)
         timesteps =  torch.cat([timesteps] * 2)
-        #noise_pred = self.unet(latent_model_input, timesteps, prompt_embeds).sample
+        noise_pred = self.unet(latent_model_input, timesteps, prompt_embeds).sample
+        #noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+        #print(noise_pred_cond.equal(noise_pred_uncond))
+        #print(noise_pred_uncond)
+        #assert False
         
-        
-        if do_classifier_free_guidance:
-            noise_pred_cond = (self.unet(latent_model_input, timesteps, prompt_embeds).sample).chunk(2)[0]
-            import random
-            p = random.random()
-            uncond_embeds =  torch.zeros_like(prompt_embeds) if p < 0.1 else prompt_embeds
-            noise_pred_uncond = (self.unet(latent_model_input, timesteps, uncond_embeds).sample).chunk(2)[0]
+        #if do_classifier_free_guidance:
+        #    noise_pred_cond = (self.unet(latent_model_input, timesteps, prompt_embeds).sample).chunk(2)[0]
+        #    import random
+        #    p = random.random()
+        #    uncond_embeds =  torch.zeros_like(prompt_embeds) if p < 0.1 else prompt_embeds
+        #    noise_pred_uncond = (self.unet(latent_model_input, timesteps, uncond_embeds).sample).chunk(2)[0]
 
         # perform guidance
         if do_classifier_free_guidance:
-            #noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
         
         
@@ -459,7 +462,8 @@ class EmuGenerationPipeline(nn.Module):
             model_cfg = json.load(f)
 
         # model = Emu(**model_cfg, cast_dtype=torch.float, **kwargs)
-        model = Emu(**model_cfg, args=args) if args.instruct or args.lora else Emu_pretrain(**model_cfg, args=args)
+        # model = Emu(**model_cfg, args=args) if args.instruct or args.lora else Emu_pretrain(**model_cfg, args=args)
+        model = Emu(**model_cfg, args=args)
         
         ckpt = torch.load(model_path, map_location="cpu")
         if args.lora:
@@ -486,7 +490,7 @@ class EmuGenerationPipeline(nn.Module):
         return model
 
     @classmethod
-    def from_pretrained(cls, emu_encoder, path: str, **kwargs):
+    def from_pretrained(cls, emu_encoder, path: str,**kwargs):
         multimodal_model = kwargs.pop("multimodal_model", None)
         feature_extractor = kwargs.pop("feature_extractor", None)
         safety_checker = kwargs.pop("safety_checker", None)
@@ -500,7 +504,9 @@ class EmuGenerationPipeline(nn.Module):
         feature_extractor = check_if_none(feature_extractor, f"{path}/feature_extractor")
         safety_checker = check_if_none(safety_checker, f"{path}/safety_checker")
         scheduler = check_if_none(scheduler, f"{path}/scheduler")
-        unet = check_if_none(unet, f"{path}/unet")
+        up = f"{path}/unet" if not kwargs['args'].instrp2p else "ckpts/instrp2p/unet"
+        print(up)
+        unet = check_if_none(unet, up)
         vae = check_if_none(vae, f"{path}/vae")
 
         return cls(

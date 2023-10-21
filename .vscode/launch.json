@@ -51,6 +51,25 @@
                 "--bf16"
             ]
 
+        },
+        {
+            "name": "instrp2p",
+            "type": "python",
+            "request": "launch",
+            "cwd": "/root/Projects/Emu",
+            // "program": "/mnt/cephfs/home/zhihongyan/anaconda3/envs/zsvlnhl/lib/python3.8/site-packages/torch/distributed/launch.py",
+            "program": "instrp2p.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "python": "/root/Projects/miniconda3/envs/emu/bin/python",
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
+            "args":[
+               "--batch_size","96",
+               "--lr_base","0.0001",
+               "--data_path","../emu_data_subtask/",
+               "--log_dir","results/debug1e-4"
+            ]
+
         }
     ]
 }

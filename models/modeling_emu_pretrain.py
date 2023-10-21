@@ -152,13 +152,18 @@ class Emu(nn.Module):
         #     use_orig_params=False)
         
         # print(self.decoder)
-        
-        for i in range(len(self.decoder.lm.model.layers)):
-            self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached = \
-                self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
-            self.decoder.lm.model.layers[i].self_attn.rotary_emb.sin_cached = \
-                self.decoder.lm.model.layers[i].self_attn.rotary_emb.sin_cached.to(torch.cuda.current_device())
-        
+        if not self.args.lora:
+            for i in range(len(self.decoder.lm.model.layers)):
+                self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached = \
+                    self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
+                self.decoder.lm.model.layers[i].self_attn.rotary_emb.sin_cached = \
+                    self.decoder.lm.model.layers[i].self_attn.rotary_emb.sin_cached.to(torch.cuda.current_device())
+        else:
+            for i in range(len(self.decoder.lm.base_model.model.model.layers)):
+                self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.cos_cached = \
+                    self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
+                self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.sin_cached = \
+                    self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.sin_cached.to(torch.cuda.current_device())
         # for n,b in self.decoder.named_buffers():
         #     b = b.to(torch.cuda.current_device())
         
@@ -336,6 +341,83 @@ class Emu(nn.Module):
 
             image_idx = (input_ids == IMAGE)
             # torch.flip 对第1维进行反转   torch.cunsum 对第一维进行对前元素加和
+            cumsum_idx = torch.flip(torch.cumsum(torch.flip(image_idx, dims=[1]), dim=1), dims=[1])
+            if image is not None:
+                prompt_idx = torch.logical_and(image_idx, cumsum_idx > num_img_token)
+                text_embeds[prompt_idx] = prompt_image_embeds
+
+            if target_image_embeds is not None:
+                target_idx = torch.logical_and(image_idx, torch.logical_and(cumsum_idx > 0, cumsum_idx <= num_img_token))
+                text_embeds[target_idx] = target_image_embeds
+
+            outputs = self.decoder.lm.model(
+                inputs_embeds=text_embeds,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+            image_idx = (input_ids == IMAGE) + (input_ids == BOI)
+            cumsum_idx = torch.flip(torch.cumsum(torch.flip(image_idx, dims=[1]), dim=1), dims=[1])
+            target_idx = torch.logical_and(image_idx, torch.logical_and(cumsum_idx > 0, cumsum_idx <= num_img_token+1))
+
+            hidden_states = outputs.hidden_states[-1]
+            target_image_embeds = hidden_states[target_idx]
+            target_image_embeds = target_image_embeds.view(-1, target_image_embeds.shape[-1])
+            target_image_embeds = self.decoder.lm.stu_regress_head(target_image_embeds)
+
+        _, C = target_image_embeds.shape
+        B = hidden_states.shape[0]
+        target_image_embeds = target_image_embeds.view(B, -1, C)
+
+        return target_image_embeds
+
+
+
+    @torch.no_grad()
+    def generate_image_batch(
+        self,
+        text: List[str],
+        image: Optional[torch.Tensor] = None,
+        placeholder: str = "[<IMG_PLH>]",
+    ) -> torch.Tensor:
+        IMAGE, BOI = self.decoder.tokenizer.convert_tokens_to_ids(["<image>", "[IMG]"])
+        device = self.ln_visual.weight.device
+        
+        
+        image = torch.cat(image, dim=0)
+        batch_size = image.shape[0]
+        
+        if image is not None:
+            # image placeholder is already injected into text prompt
+            prompt_image_embeds = self.visual.forward_features(image)
+            prompt_image_embeds = self.ln_visual(prompt_image_embeds)
+            prompt_image_embeds = self.cformer(prompt_image_embeds)
+            prompt_image_embeds = prompt_image_embeds.view(-1, prompt_image_embeds.shape[-1])
+
+
+        batch_text = ([t.replace(placeholder, self.image_placeholder) for t in text])
+
+        target_image_embeds = None
+        for num_img_token in range(self.n_causal):
+            if num_img_token == 0:
+                batch_text = [f"{t}[IMG]" for t in batch_text]
+                    
+            else:
+                batch_text = [f"{t}<image>" for t in batch_text]
+                
+
+            inputs = self.decoder.tokenizer(batch_text, padding="longest", return_tensors="pt")
+            attention_mask = inputs.attention_mask.to(device)
+            input_ids = inputs.input_ids.to(device)
+
+            
+            if self.args.lora:
+                text_embeds = self.decoder.lm.model.model.embed_tokens(input_ids)
+            else:
+                text_embeds = self.decoder.lm.model.embed_tokens(input_ids)
+
+            image_idx = (input_ids == IMAGE)
             cumsum_idx = torch.flip(torch.cumsum(torch.flip(image_idx, dims=[1]), dim=1), dims=[1])
             if image is not None:
                 prompt_idx = torch.logical_and(image_idx, cumsum_idx > num_img_token)

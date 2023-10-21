@@ -46,6 +46,14 @@ def parse_args():
     )
     parser.add_argument(
         
+        "--instrp2p",
+        action='store_true',
+        default=False,
+        help="Load Emu-I",
+    )
+    
+    parser.add_argument(
+        
         "--avg_reg",
         action='store_true',
         default=False,
@@ -425,7 +433,7 @@ def visual_decoding_example(pipeline, args, world_size):
                 if not os.path.exists(p:=(args.log_dir + f"/vis")):
                     os.makedirs(p)
                 for iii, vi in enumerate(vis):
-                    vi.save(args.log_dir + f"/vis/{epoch}_{bi}_{rank}_{iii}.png")
+                    vi.save(args.log_dir + f"/vis/{epoch}_{global_step}_{rank}_{iii}.png")
                     
 
         scheduler.step()

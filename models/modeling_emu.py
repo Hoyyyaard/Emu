@@ -121,7 +121,7 @@ class Emu(nn.Module):
             cpu_offload=CPUOffload(offload_params=True),
             device_id=torch.cuda.current_device(),
             auto_wrap_policy=my_auto_wrap_policy,
-            limit_all_gathers=True
+            # limit_all_gathers=True
             # use_orig_params=True
         )
         
@@ -136,27 +136,44 @@ class Emu(nn.Module):
         #             total_train_param += param.numel()
         #     print(f"Train Parameters : {total_train_param * 2 /1024**3} GB")    
     
-        
-        for n, m in self.decoder.lm.base_model.model.model.named_children():
-            if isinstance(m, nn.ModuleList):
-                tmp_module_list = []
-                for li,layer in enumerate(m):
-                    wrapper_kwargs['auto_wrap_policy'] = my_auto_wrap_policy
+        if self.args.lora:
+            for n, m in self.decoder.lm.base_model.model.model.named_children():
+                if isinstance(m, nn.ModuleList):
+                    tmp_module_list = []
+                    for li,layer in enumerate(m):
+                        wrapper_kwargs['auto_wrap_policy'] = my_auto_wrap_policy
+                        with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                            tmp_module_list.append(wrap(layer))    
+                    tmp_module_list = nn.ModuleList(tmp_module_list)
+                    setattr(self.decoder.lm.base_model.model.model, n, tmp_module_list)
+                else:
+                    wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
                     with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-                        tmp_module_list.append(wrap(layer))    
-                tmp_module_list = nn.ModuleList(tmp_module_list)
-                setattr(self.decoder.lm.base_model.model.model, n, tmp_module_list)
-            else:
+                        setattr(self.decoder.lm.base_model.model.model, n, wrap(m))
+                
                 wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
                 with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-                    setattr(self.decoder.lm.base_model.model.model, n, wrap(m))
+                    self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
+                    self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
+
+            else:
+                wrapper_kwargs['auto_wrap_policy'] = my_auto_wrap_policy
+                with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                    for n, m in self.decoder.lm.model.named_children():
+                        if isinstance(m, nn.ModuleList):
+                            tmp_module_list = nn.ModuleList(
+                                            wrap(layer)
+                                            for layer in m
+                                        )
+                            setattr(self.decoder.lm.model, n, tmp_module_list)
+                        else:
+                            setattr(self.decoder.lm.model, n, wrap(m))
+                            
+                    self.decoder.lm.lm_head = wrap(self.decoder.lm.lm_head)
+                    self.decoder.lm.stu_regress_head = wrap(self.decoder.lm.stu_regress_head)
          
             
-        wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
-        with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-            self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
-            self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
-
+        
         
         self.visual = self.visual.to(torch.cuda.current_device())
         self.ln_visual = self.ln_visual.to(torch.cuda.current_device())
@@ -175,11 +192,18 @@ class Emu(nn.Module):
         
         # print(self.decoder)
         
-        for i in range(len(self.decoder.lm.base_model.model.model.layers)):
-            self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.cos_cached = \
-                self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
-            self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.sin_cached = \
-                self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.sin_cached.to(torch.cuda.current_device())
+        if not self.args.lora:
+            for i in range(len(self.decoder.lm.model.layers)):
+                self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached = \
+                    self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
+                self.decoder.lm.model.layers[i].self_attn.rotary_emb.sin_cached = \
+                    self.decoder.lm.model.layers[i].self_attn.rotary_emb.sin_cached.to(torch.cuda.current_device())
+        else:
+            for i in range(len(self.decoder.lm.base_model.model.model.layers)):
+                self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.cos_cached = \
+                    self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
+                self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.sin_cached = \
+                    self.decoder.lm.base_model.model.model.layers[i].self_attn.rotary_emb.sin_cached.to(torch.cuda.current_device())
         
         # for n,b in self.decoder.named_buffers():
         #     b = b.to(torch.cuda.current_device())
