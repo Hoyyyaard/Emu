@@ -85,6 +85,12 @@ def parse_args():
         default=1,
     )
     parser.add_argument(
+        "--conditioning_dropout_prob",
+        type=float,
+        default=0.05,
+    )
+    
+    parser.add_argument(
         "--lr_base",
         type=float,
         default=1e-7,
@@ -213,9 +219,9 @@ class InstrP2P_Finetune_Pipeline(StableDiffusionInstructPix2PixPipeline):
             image = [image]
 
         if isinstance(image[0], PIL.Image.Image):
-            # w, h = image[0].size
-            # w, h = (x - x % 8 for x in (w, h))  # resize to integer multiple of 8
-            w, h = 224, 224
+            w, h = image[0].size
+            w, h = (x - x % 8 for x in (w, h))  # resize to integer multiple of 8
+
             image = [np.array(i.resize((w, h), resample=PIL_INTERPOLATION["lanczos"]))[None, :] for i in image]
             image = np.concatenate(image, axis=0)
             image = np.array(image).astype(np.float32) / 255.0
@@ -253,15 +259,21 @@ class InstrP2P_Finetune_Pipeline(StableDiffusionInstructPix2PixPipeline):
 
         # 2. Encode input prompt
         # prompt_embeds = [prompt_embeds, negative_prompt_embeds, negative_prompt_embeds]
-        prompt_embeds = self._encode_prompt(
-            prompt,
-            device,
-            num_images_per_prompt,
-            do_classifier_free_guidance,
-            negative_prompt,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-        )
+        # prompt_embeds = self._encode_prompt(
+        #     prompt,
+        #     device,
+        #     num_images_per_prompt,
+        #     do_classifier_free_guidance,
+        #     negative_prompt,
+        #     prompt_embeds=prompt_embeds,
+        #     negative_prompt_embeds=negative_prompt_embeds,
+        # )
+        prompt_embeds = self.text_encoder(self.tokenizer(prompt,
+                                                    max_length=self.tokenizer.model_max_length,
+                                                    padding="max_length",
+                                                    truncation=True,
+                                                    return_tensors="pt",
+                                                    ).input_ids.to(device))[0]
         
         # 3. Preprocess image
         image = self.preprocess(image)
@@ -274,81 +286,126 @@ class InstrP2P_Finetune_Pipeline(StableDiffusionInstructPix2PixPipeline):
         
         # 5. Prepare Image latents
         gt_image = gt_image.to(device=device, dtype=prompt_embeds.dtype)
-        gt_image_latents = self.vae.encode(gt_image).latent_dist.mode()
+        gt_image_latents = self.vae.encode(gt_image).latent_dist.sample()
+        gt_image_latents = gt_image_latents * self.vae.config.scaling_factor
         
-        init_image_latents = self.prepare_image_latents(
-            image,
-            batch_size,
-            num_images_per_prompt,
-            prompt_embeds.dtype,
-            device,
-            do_classifier_free_guidance,
-            generator,
-        )
+        image = image.to(device=device, dtype=prompt_embeds.dtype)
+        init_image_latents = self.vae.encode(image).latent_dist.mode()
+
+        # init_image_latents = self.prepare_image_latents(
+        #     image,
+        #     batch_size,
+        #     num_images_per_prompt,
+        #     prompt_embeds.dtype,
+        #     device,
+        #     do_classifier_free_guidance,
+        #     generator,
+        # )
 
         # 6. Prepare latent variables
-        num_channels_latents = self.vae.config.latent_channels
-        latents = self.prepare_latents(
-            batch_size * num_images_per_prompt,
-            num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
-            generator,
-            latents,
-        )
+        noise = torch.randn_like(gt_image_latents)
+        # num_channels_latents = self.vae.config.latent_channels
+        # latents = self.prepare_latents(
+        #     batch_size * num_images_per_prompt,
+        #     num_channels_latents,
+        #     height,
+        #     width,
+        #     prompt_embeds.dtype,
+        #     device,
+        #     generator,
+        #     latents,
+        # )
         
         # 7. Check that shapes of latents and image match the UNet channels
-        num_channels_image = gt_image_latents.shape[1]
-        if num_channels_latents + num_channels_image != self.unet.config.in_channels:
-            raise ValueError(
-                f"Incorrect configuration settings! The config of `pipeline.unet`: {self.unet.config} expects"
-                f" {self.unet.config.in_channels} but received `num_channels_latents`: {num_channels_latents} +"
-                f" `num_channels_image`: {num_channels_image} "
-                f" = {num_channels_latents+num_channels_image}. Please verify the config of"
-                " `pipeline.unet` or your `image` input."
-            )
+        # num_channels_image = gt_image_latents.shape[1]
+        # if num_channels_latents + num_channels_image != self.unet.config.in_channels:
+        #     raise ValueError(
+        #         f"Incorrect configuration settings! The config of `pipeline.unet`: {self.unet.config} expects"
+        #         f" {self.unet.config.in_channels} but received `num_channels_latents`: {num_channels_latents} +"
+        #         f" `num_channels_image`: {num_channels_image} "
+        #         f" = {num_channels_latents+num_channels_image}. Please verify the config of"
+        #         " `pipeline.unet` or your `image` input."
+        #     )
         
         # 8. Sample timestep within num_inference_steps and compute noise target
-        self.scheduler.set_timesteps(num_inference_steps, device=device)
-        timesteps = self.scheduler.timesteps
-        timesteps_index = torch.randint(0, len(timesteps), (1,))
-        t = timesteps[timesteps_index].to(device)
+        self.scheduler.set_timesteps(self.scheduler.config.num_train_timesteps, device=device)
+        timesteps = torch.randint(0, self.scheduler.config.num_train_timesteps, (batch_size,), device=gt_image_latents.device)
+        t = timesteps.long()
+        # timesteps_index = torch.randint(0, len(timesteps), (1,))
+        # t = timesteps[timesteps_index].to(device)
         
         # Add noise of timesteps to latents
-        target = latents
-        noisy_latents = self.scheduler.add_noise(gt_image_latents, latents, t)
-        
-        latent_model_input = torch.cat([noisy_latents] * 3) if do_classifier_free_guidance else noisy_latents
-        # t = torch.cat([t] * 3) if do_classifier_free_guidance else t
-        # concat latents, image_latents in the channel dimension
-        scaled_latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-        scaled_latent_model_input = torch.cat([scaled_latent_model_input, init_image_latents], dim=1)
-        # predict the noise residual
-        noise_pred = self.unet(scaled_latent_model_input, t, encoder_hidden_states=prompt_embeds).sample
-        
-        scheduler_is_in_sigma_space = hasattr(self.scheduler, "sigmas")
-        if scheduler_is_in_sigma_space:
-            if isinstance(t, torch.Tensor):
-                t = t.to(self.scheduler.timesteps.device)
-            step_index = (self.scheduler.timesteps == t).nonzero().item()
-            sigma = self.scheduler.sigmas[step_index]
-            noise_pred = latent_model_input - sigma * noise_pred
-                    
-        # perform guidance
-        if do_classifier_free_guidance:
-            noise_pred_text, noise_pred_image, noise_pred_uncond = noise_pred.chunk(3)
-            noise_pred = (
-                noise_pred_uncond
-                + guidance_scale * (noise_pred_text - noise_pred_image)
-                + image_guidance_scale * (noise_pred_image - noise_pred_uncond)
+
+        noisy_latents = self.scheduler.add_noise(gt_image_latents, noise, t)
+
+        # Random apply classify free guidance
+        if args.conditioning_dropout_prob is not None:
+            random_p = torch.rand(batch_size, device=gt_image_latents.device, generator=generator)
+            # Sample masks for the edit prompts.
+            prompt_mask = random_p < 2 * args.conditioning_dropout_prob
+            prompt_mask = prompt_mask.reshape(batch_size, 1, 1)
+            # Final text conditioning.
+            null_conditioning = self.text_encoder(self.tokenizer([""],
+                                                                max_length=self.tokenizer.model_max_length,
+                                                                padding="max_length",
+                                                                truncation=True,
+                                                                return_tensors="pt",
+                                                                ).input_ids.to(device))[0]
+            prompt_embeds = torch.where(prompt_mask, null_conditioning, prompt_embeds)
+
+            # Sample masks for the original images.
+            image_mask_dtype = init_image_latents.dtype
+            image_mask = 1 - (
+                (random_p >= args.conditioning_dropout_prob).to(image_mask_dtype)
+                * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
             )
+            image_mask = image_mask.reshape(batch_size, 1, 1, 1)
+            # Final image conditioning.
+            init_image_latents = image_mask * init_image_latents
+
+
+        # latent_model_input = torch.cat([noisy_latents] * 3) if do_classifier_free_guidance else noisy_latents
+        # # t = torch.cat([t] * 3) if do_classifier_free_guidance else t
+        # # concat latents, image_latents in the channel dimension
+        # scaled_latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+        
+        if self.scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif self.scheduler.config.prediction_type == "v_prediction":
+            target = self.scheduler.get_velocity(latents, noise, timesteps)
+        else:
+            raise ValueError(
+                f"Unknown prediction type {self.scheduler.config.prediction_type}"
+            )
+
+
+        latent_model_input = torch.cat([noisy_latents, init_image_latents], dim=1)
+        # predict the noise residual
+        noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=prompt_embeds).sample
+        
+        # scheduler_is_in_sigma_space = hasattr(self.scheduler, "sigmas")
+        # if scheduler_is_in_sigma_space:
+        #     if isinstance(t, torch.Tensor):
+        #         t = t.to(self.scheduler.timesteps.device)
+        #     step_indices = [(self.scheduler.timesteps == it).nonzero().item() for it in t]
+        #     sigmas = self.scheduler.sigmas.to(device=gt_image_latents.device, dtype=gt_image_latents.dtype)     
+        #     sigma = sigmas[step_indices].flatten()
+        #     while len(sigma.shape) < len(gt_image_latents.shape):
+        #         sigma = sigma.unsqueeze(-1)
+
+        #     noise_pred = noisy_latents - sigma * noise_pred
+                    
+        # # perform guidance
+        # if do_classifier_free_guidance:
+        #     noise_pred_text, noise_pred_image, noise_pred_uncond = noise_pred.chunk(3)
+        #     noise_pred = (
+        #         noise_pred_uncond
+        #         + guidance_scale * (noise_pred_text - noise_pred_image)
+        #         + image_guidance_scale * (noise_pred_image - noise_pred_uncond)
+        #     )
         
         import torch.nn.functional as F
-        loss = F.mse_loss(noise_pred, target, reduction="none")
-        loss = loss.mean(dim=list(range(1, len(loss.shape))))
-        loss = loss.mean()
+        loss = F.mse_loss(noise_pred.float(), target.float(), reduction="mean") 
         
         return loss
 
@@ -374,7 +431,7 @@ def main(rank, world_size, args):
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                 sampler=train_sampler,
                                 batch_size=args.batch_size ,
-                                num_workers=16,
+                                num_workers=1,
                                 drop_last=True)
     model_id = "ckpts/instrp2p"
     pipe = InstrP2P_Finetune_Pipeline.from_pretrained(model_id, torch_dtype=torch.float16, safety_checker=None)
@@ -427,10 +484,10 @@ def main(rank, world_size, args):
                 batch_image_cond.append(PIL.Image.open(batch['image_cond_p'][bii]))
                 batch_gt_image.append(PIL.Image.open(batch['gt_image_p'][bii]))
             
-            if bi % 20 == 0:
+            if bi % 50 == 0:
                 # batch_image_cond[0].save(args.log_dir + f"/vis/origin.png")
                 # print(batch_prompt[0])
-                vis_images = pipe(batch_prompt[:10], image=batch_image_cond[:10], num_inference_steps=50, guidance_scale=3., image_guidance_scale=3.).images
+                vis_images = pipe(batch_prompt[:10], image=batch_image_cond[:10], num_inference_steps=10, guidance_scale=3., image_guidance_scale=3.).images
                 if not os.path.exists(p:=(args.log_dir + f"/vis")):
                     os.makedirs(p)
                 for iii, vi in enumerate(vis_images):
@@ -440,7 +497,7 @@ def main(rank, world_size, args):
                 prompt = batch_prompt,
                 image=batch_image_cond,
                 gt_image=batch_gt_image,
-                num_inference_steps=50, 
+                num_inference_steps=10, 
                 guidance_scale=3., 
                 image_guidance_scale=3.
             )
@@ -456,6 +513,9 @@ def main(rank, world_size, args):
                 if not torch.sum(p.grad) == 0:
                     nono_zero_grad += 1
             assert nono_zero_grad > 0
+            
+
+            torch.nn.utils.clip_grad_norm_(parameters=pipe.unet.parameters(), max_norm=1, norm_type=2)
             
             optimizer.step()
             # scheduler.step()

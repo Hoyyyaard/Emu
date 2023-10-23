@@ -64,10 +64,11 @@
             "python": "/root/Projects/miniconda3/envs/emu/bin/python",
             "env": {"CUDA_VISIBLE_DEVICES":"0"},
             "args":[
-               "--batch_size","96",
-               "--lr_base","0.0001",
+               "--batch_size","48",
+               "--lr_base","0.000001",
+               "--epoch","1000",
                "--data_path","../emu_data_subtask/",
-               "--log_dir","results/debug1e-4"
+               "--log_dir","results/debug"
             ]
 
         }
