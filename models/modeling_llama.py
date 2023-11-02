@@ -115,7 +115,6 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             # Flatten the tokens
             loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
             loss_cls = loss_fct(shift_logits.view(-1, self.config.vocab_size), shift_labels.view(-1)) 
-            # TODO:这里一次性重建了太多 image loss感觉有点顶不住 而且反向传播也不太行
             # calculate the regressive loss for image tokens
             # loss_freg = torch.nn.MSELoss(size_average = False)
             loss_freg = torch.nn.MSELoss()
@@ -124,20 +123,20 @@ class LlamaForReg(transformers.LlamaForCausalLM):
             # image_logits = image_logits[:-1,:]  
             image_logits_aft_reg_head = self.stu_regress_head(image_logits)
             # 分开计算每一个image regression的loss
-            loss_reg_list = []
+            # loss_reg_list = []
             # print(len(image_logits_aft_reg_head))
-            for pi in range(int(len(image_logits_aft_reg_head)/33) - 1):
-                # for ppi in range(len(regress_mask)):
-                #     mask = regress_mask[pi*33: (pi+1)*33]
-                loss_reg_list.append(loss_freg(image_logits_aft_reg_head[pi*33: (pi+1)*33-1], regress_labels[pi*32: (pi+1)*32]) )
-            # loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels) 
-            loss_reg = sum(loss_reg_list)
+            # for pi in range(int(len(image_logits_aft_reg_head)/33) - 1):
+            #     # for ppi in range(len(regress_mask)):
+            #     #     mask = regress_mask[pi*33: (pi+1)*33]
+            #     loss_reg_list.append(loss_freg(image_logits_aft_reg_head[pi*33: (pi+1)*33-1], regress_labels[pi*32: (pi+1)*32]) )
+            # loss_reg = sum(loss_reg_list)
+            loss_reg = loss_freg(image_logits_aft_reg_head, regress_labels) 
             
         # loss = loss_cls + loss_reg
         # print("loss", loss)
         
         return RegressCausalLMOutputWithPast(
-            llm_loss=(loss_cls, loss_reg, len(loss_reg_list)),
+            llm_loss=(loss_cls, loss_reg),
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
@@ -210,7 +209,7 @@ class LLaMAForClsAndRegression(nn.Module):
     def get_num_layers(self):
         return len(self.lm.model.layers)
 
-    def forward(self, image_embeds, text_input, text_mask, lora, text_output=None, output_mask=None):
+    def forward(self, image_embeds, text_input, text_mask, args, text_output=None, output_mask=None):
         """
         Process:
         1. image_embeds & text_tokens as input
@@ -244,11 +243,16 @@ class LLaMAForClsAndRegression(nn.Module):
         targets = targets.masked_fill(
             targets == self.img_end_token_id, -100
         )
+        
+        if args.instruction_tuning:
+            for pi,p in enumerate(args.batch_prefix_index):
+                targets[pi][:p] = -100
+                
 
         TB, max_seq_len = text_input.shape
         text_input = torch.flatten(text_input, start_dim=0, end_dim=1)
 
-        if lora:
+        if args.lora or args.instruct:
             text_embeds = self.lm.base_model.model.model.embed_tokens(text_input)  # [B, seq_len, C]
         else:
             text_embeds = self.lm.model.embed_tokens(text_input)  # [B, seq_len, C]
@@ -264,14 +268,14 @@ class LLaMAForClsAndRegression(nn.Module):
         text_embeds[all_image_indices] = image_embeds
 
 
-        # regress_label_mask = ((text_input == self.image_token_id) + (text_input == self.img_end_token_id)).to(
-        #     image_embeds.device)
-        # regress_labels = text_embeds[regress_label_mask] 
-        # regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
-
-        regress_label_mask = (text_input == self.image_token_id).to(image_embeds.device)
+        regress_label_mask = ((text_input == self.image_token_id) + (text_input == self.img_end_token_id)).to(
+            image_embeds.device)
         regress_labels = text_embeds[regress_label_mask] 
         regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
+
+        # regress_label_mask = (text_input == self.image_token_id).to(image_embeds.device)
+        # regress_labels = text_embeds[regress_label_mask] 
+        # regress_mask = ((text_input == self.image_token_id) + (text_input == self.img_token_id)).to(image_embeds.device)
         
         text_embeds = text_embeds.view(TB, max_seq_len, -1)
         

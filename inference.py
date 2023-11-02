@@ -15,6 +15,12 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
+
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+import logging
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     CPUOffload,
@@ -26,12 +32,7 @@ from torch.distributed.fsdp.wrap import (
     wrap,
 )
 
-import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
-import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-import logging
 
 
 def parse_args():

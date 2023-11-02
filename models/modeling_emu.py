@@ -243,7 +243,7 @@ class Emu(nn.Module):
         self.cformer.set_grad_checkpointing()
         self.decoder.set_grad_checkpointing()
 
-    def forward(self, image, text_input, input_mask, lora, text_output=None, output_mask=None, image_latent=None,
+    def forward(self, image, text_input, input_mask, args, text_output=None, output_mask=None, image_latent=None,
                 image_features=None):
         # [B, C, H, W] --> [B, n_patch, C_vis]
         if image_latent is None or image_features is None:
@@ -253,7 +253,7 @@ class Emu(nn.Module):
         # [B, n_patch, C_vis] --> [B, n_causal, C_llm]
         image_features = self.cformer(image_features)
         # loss from hf lm model
-        loss = self.decoder(image_features, text_input=text_input, text_output=text_output, text_mask=input_mask, lora=lora,
+        loss = self.decoder(image_features, text_input=text_input, text_output=text_output, text_mask=input_mask, args=args,
                             output_mask=output_mask)
         return loss
 
