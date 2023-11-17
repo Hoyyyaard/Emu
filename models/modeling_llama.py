@@ -106,7 +106,6 @@ class LlamaForReg(transformers.LlamaForCausalLM):
         loss = None   # Language modeling loss (for next-token prediction).
         loss_cls = None
         loss_reg = None
-        loss_reg_list = []
         #  Tokens with indices set to -100 are ignored (masked), the loss is only computed for the tokens with labels in [0, ..., config.vocab_size].
         if labels is not None:
             # Shift so that tokens < n predict n
@@ -161,11 +160,13 @@ class LLaMAForClsAndRegression(nn.Module):
             use_fast=False,
         )
 
-        if args.instruct:  # for instruction tuning, [USER] and [ASSISTANT] tokens are added
-            special_token_list = [DEFAULT_IMG_START_TOKEN, DEFAULT_IMG_END_TOKEN, DEFAULT_IMG_TOKEN, USER_TOKEN,
+        # if args.instruct:  # for instruction tuning, [USER] and [ASSISTANT] tokens are added
+        #     special_token_list = [DEFAULT_IMG_START_TOKEN, DEFAULT_IMG_END_TOKEN, DEFAULT_IMG_TOKEN, USER_TOKEN,
+        #                           ASSISTANT_TOKEN]
+        # else:
+        #     special_token_list = [DEFAULT_IMG_START_TOKEN, DEFAULT_IMG_END_TOKEN, DEFAULT_IMG_TOKEN]
+        special_token_list = [DEFAULT_IMG_START_TOKEN, DEFAULT_IMG_END_TOKEN, DEFAULT_IMG_TOKEN, USER_TOKEN,
                                   ASSISTANT_TOKEN]
-        else:
-            special_token_list = [DEFAULT_IMG_START_TOKEN, DEFAULT_IMG_END_TOKEN, DEFAULT_IMG_TOKEN]
 
         special_tokens_dict = dict(
             pad_token=DEFAULT_PAD_TOKEN,

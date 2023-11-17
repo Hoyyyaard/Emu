@@ -136,7 +136,7 @@ class Emu(nn.Module):
         #             total_train_param += param.numel()
         #     print(f"Train Parameters : {total_train_param * 2 /1024**3} GB")    
     
-        if self.args.lora:
+        if self.args.lora or self.args.instruct:
             for n, m in self.decoder.lm.base_model.model.model.named_children():
                 if isinstance(m, nn.ModuleList):
                     tmp_module_list = []
@@ -151,26 +151,26 @@ class Emu(nn.Module):
                     with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
                         setattr(self.decoder.lm.base_model.model.model, n, wrap(m))
                 
-                wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
-                with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-                    self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
-                    self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
+            wrapper_kwargs['auto_wrap_policy'] = size_based_auto_wrap_policy
+            with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                self.decoder.lm.base_model.model.lm_head = wrap(self.decoder.lm.base_model.model.lm_head)
+                self.decoder.lm.base_model.model.stu_regress_head = wrap(self.decoder.lm.base_model.model.stu_regress_head)
 
-            else:
-                wrapper_kwargs['auto_wrap_policy'] = my_auto_wrap_policy
-                with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
-                    for n, m in self.decoder.lm.model.named_children():
-                        if isinstance(m, nn.ModuleList):
-                            tmp_module_list = nn.ModuleList(
-                                            wrap(layer)
-                                            for layer in m
-                                        )
-                            setattr(self.decoder.lm.model, n, tmp_module_list)
-                        else:
-                            setattr(self.decoder.lm.model, n, wrap(m))
-                            
-                    self.decoder.lm.lm_head = wrap(self.decoder.lm.lm_head)
-                    self.decoder.lm.stu_regress_head = wrap(self.decoder.lm.stu_regress_head)
+        else:
+            wrapper_kwargs['auto_wrap_policy'] = my_auto_wrap_policy
+            with enable_wrap(wrapper_cls=FSDP, **wrapper_kwargs):
+                for n, m in self.decoder.lm.model.named_children():
+                    if isinstance(m, nn.ModuleList):
+                        tmp_module_list = nn.ModuleList(
+                                        wrap(layer)
+                                        for layer in m
+                                    )
+                        setattr(self.decoder.lm.model, n, tmp_module_list)
+                    else:
+                        setattr(self.decoder.lm.model, n, wrap(m))
+                        
+                self.decoder.lm.lm_head = wrap(self.decoder.lm.lm_head)
+                self.decoder.lm.stu_regress_head = wrap(self.decoder.lm.stu_regress_head)
          
             
         
@@ -192,7 +192,7 @@ class Emu(nn.Module):
         
         # print(self.decoder)
         
-        if not self.args.lora:
+        if not (self.args.lora or self.args.instruct):
             for i in range(len(self.decoder.lm.model.layers)):
                 self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached = \
                     self.decoder.lm.model.layers[i].self_attn.rotary_emb.cos_cached.to(torch.cuda.current_device())
@@ -231,9 +231,8 @@ class Emu(nn.Module):
         # )
         
         torch.cuda.empty_cache()
-        if torch.cuda.current_device() == 0:
-            print(f'Decoder params after fsdp {(sum(p.numel() for p in self.decoder.parameters()))*2/(1024**3):.3f} GB')
-            print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
+        print(f'Decoder params after fsdp {(sum(p.numel() for p in self.decoder.parameters()))*2/(1024**3):.3f} GB')
+        print(f'torch.cuda.memory_reserved : {torch.cuda.memory_reserved(torch.cuda.current_device())/1024**3.:3f} GB')
             
         
         
@@ -282,7 +281,7 @@ class Emu(nn.Module):
         itype = torch.bfloat16 if self.args.bf16 else torch.float16
         if image is not None:
             # image = image.to(dtype=torch.float16)
-            image = image.to(torch.cuda.current_device()).to(dtype=itype)
+            image = image.to(self.ln_visual.weight.device).to(dtype=itype)
             image_features = self.ln_visual(self.visual.forward_features(image)).to(dtype=itype)
             # image_features = image_features.cpu()
             # image_features = self.cformer(image_features).squeeze().to(dtype=torch.bfloat16)

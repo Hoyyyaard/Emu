@@ -82,14 +82,15 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "python": "/root/Projects/miniconda3/envs/emu/bin/python",
-            "env": {"CUDA_VISIBLE_DEVICES":"0"},
+            "env": {"CUDA_VISIBLE_DEVICES":"6"},
             "args":[
                 "--ckpt_path","ckpts/Emu-instruct.pt",
-                "--instruct",
+                "--pretrain",
+                "--lora",
+                "--pretrain_predict_task",
                 "--bf16",
                 "--data_path","../dataset/CLIPORT/emu_data_subtask_l",
-                "--instruction_tuning",
-                "--batch_size","4"
+                "--batch_size","4",
             ]
 
         }
